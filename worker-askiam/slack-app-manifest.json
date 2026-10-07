@@ -13,8 +13,8 @@
       {
         "command": "/askiam",
         "url": "https://askiam-bot.baronia.workers.dev/slack/command",
-        "description": "Query IBM Verify IAM - users, groups, MFA, applications",
-        "usage_hint": "count users | list groups | show MFA for user_id",
+        "description": "Query IBM Verify IAM - users, groups, MFA, access requests",
+        "usage_hint": "how many users | show my access requests | list groups",
         "should_escape": false
       }
     ]
@@ -27,6 +27,10 @@
     }
   },
   "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://askiam-bot.baronia.workers.dev/slack/action"
+    },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,
     "token_rotation_enabled": false

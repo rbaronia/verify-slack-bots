@@ -6,9 +6,9 @@ const AUTH_URL       = `${VERIFY_BASE}/oauth2/authorize`;
 const TOKEN_URL      = `${VERIFY_BASE}/oauth2/token`;
 const SCOPES         = 'openid profile';
 
-// How long (ms) to keep the PKCE state entry while waiting for the user to
-// click the auth link.  5 minutes is generous.
-const STATE_TTL_MS   = 5 * 60 * 1000;
+const STATE_TTL_MS   = 5 * 60 * 1000;   // 5 min PKCE state
+const RESULT_TTL_S   = 10 * 60;         // 10 min cached MCP result for pagination
+const PAGE_SIZE      = 10;
 
 // ---------------------------------------------------------------------------
 // Helpers — PKCE
@@ -53,14 +53,117 @@ async function verifySlackSignature(rawBody, signingSecret, request) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — Slack response_url posting
+// Helpers — Slack posting
 // ---------------------------------------------------------------------------
-async function postToResponseUrl(responseUrl, text) {
-  await fetch(responseUrl, {
+async function postToResponseUrl(responseUrl, payload) {
+  const body = typeof payload === 'string'
+    ? { response_type: 'ephemeral', text: payload }
+    : { response_type: 'ephemeral', replace_original: false, ...payload };
+  const resp = await fetch(responseUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ response_type: 'ephemeral', text }),
+    body: JSON.stringify(body),
   });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => '');
+    console.error('[postToResponseUrl]', resp.status, t.slice(0, 200));
+  }
+}
+
+// Build a Slack Block Kit message from a structured Gemini response.
+// answer   — { query, summary, bullets, footer } from answerQuery()
+// cacheKey — KV key for the stored raw result
+// page     — current 0-based page
+// hasMore  — whether there are more pages
+// Suggested follow-up queries shown at the bottom of every response.
+const SUGGESTED_QUERIES = [
+  { label: '🔑 My access',         query: 'what access do I have' },
+  { label: '📋 Pending approvals', query: 'show pending approvals' },
+  { label: '📬 My requests',       query: 'show my access requests' },
+  { label: '🔐 My MFA',            query: 'show my MFA enrollments' },
+  { label: '🛒 Request access',    query: 'what apps can I request access to' },
+];
+
+function buildBlockKitMessage(answer, cacheKey, page, hasMore) {
+  // answer may be a plain string on fallback — handle gracefully
+  if (typeof answer === 'string') {
+    return { blocks: [{ type: 'section', text: { type: 'mrkdwn', text: answer } }], text: answer };
+  }
+
+  const { query = '', summary = '', bullets = [], footer = '' } = answer;
+  const blocks = [];
+
+  // ── Query header ──────────────────────────────────────────────────────────
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: `🔍 *Query:* _${query}_` }],
+  });
+  blocks.push({ type: 'divider' });
+
+  // ── Summary ───────────────────────────────────────────────────────────────
+  if (summary) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: summary },
+    });
+  }
+
+  // ── Bullet list ───────────────────────────────────────────────────────────
+  if (bullets.length > 0) {
+    blocks.push({ type: 'divider' });
+    for (let i = 0; i < bullets.length; i += 10) {
+      const chunk = bullets.slice(i, i + 10).map(b => `• ${b}`).join('\n');
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: chunk } });
+    }
+  }
+
+  // ── Footer + pagination ───────────────────────────────────────────────────
+  const footerElements = [];
+  if (footer) footerElements.push({ type: 'mrkdwn', text: `_${footer}_` });
+
+  if (cacheKey && hasMore) {
+    // Pagination buttons: "Show next 10" and "Show all"
+    if (footerElements.length) blocks.push({ type: 'context', elements: footerElements });
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          style: 'primary',
+          text: { type: 'plain_text', text: `⬇️  Show next ${PAGE_SIZE}`, emoji: true },
+          action_id: 'askiam_next_page',
+          value: JSON.stringify({ cacheKey, page: page + 1, mode: 'page' }),
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '📋  Show all', emoji: true },
+          action_id: 'askiam_show_all',
+          value: JSON.stringify({ cacheKey, page: 0, mode: 'all' }),
+        },
+      ],
+    });
+  } else if (footerElements.length) {
+    blocks.push({ type: 'context', elements: footerElements });
+  }
+
+  // ── Suggested queries ─────────────────────────────────────────────────────
+  blocks.push({ type: 'divider' });
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: '*Try asking:*' }],
+  });
+  blocks.push({
+    type: 'actions',
+    elements: SUGGESTED_QUERIES.map(s => ({
+      type: 'button',
+      text: { type: 'plain_text', text: s.label, emoji: true },
+      action_id: `askiam_suggest_${s.label.replace(/\W+/g, '_')}`,
+      value: JSON.stringify({ suggestedQuery: s.query }),
+    })),
+  });
+
+  const fallbackText = `${query} — ${summary}`;
+  return { blocks, text: fallbackText };
 }
 
 // ---------------------------------------------------------------------------
@@ -105,24 +208,117 @@ async function refreshAccessToken(refreshToken, env) {
 }
 
 // ---------------------------------------------------------------------------
+// Estimate whether a raw MCP result string likely contains more than one page.
+// We count newlines as a rough proxy for rows — good enough to decide on buttons.
+// ---------------------------------------------------------------------------
+function estimateRowCount(rawResult) {
+  return (rawResult.match(/\n/g) ?? []).length;
+}
+
+// ---------------------------------------------------------------------------
 // Core AskIAM execution — assumes a valid access token
 // ---------------------------------------------------------------------------
-async function executeQuery(query, accessToken, responseUrl, env) {
+async function executeQuery(query, accessToken, responseUrl, env, page = 0, mode = 'page') {
   const route = await routeQuery(query, env.GEMINI_API_KEY);
   if (!route) {
     await postToResponseUrl(responseUrl,
       '*AskIAM* — I didn\'t understand that query. Try:\n' +
-      '• `/askiam count all users`\n' +
-      '• `/askiam list users in Engineering`\n' +
+      '• `/askiam how many users do we have`\n' +
+      '• `/askiam show my access requests`\n' +
+      '• `/askiam what apps can I request access to`\n' +
+      '• `/askiam show my MFA enrollments`\n' +
+      '• `/askiam show pending approvals`\n' +
       '• `/askiam list all groups`\n' +
-      '• `/askiam list applications`\n' +
-      '• `/askiam show MFA enrollments for <user_id>`'
+      '• `/askiam reset password for john@example.com`'
     );
     return;
   }
-  const result = await callTool(route.toolName, route.args, accessToken);
-  const answer = await answerQuery(query, route.toolName, result, env.GEMINI_API_KEY);
-  await postToResponseUrl(responseUrl, answer);
+
+  const rawResult = await callTool(route.toolName, route.args, accessToken, {
+    clientId:     env.CF_ACCESS_CLIENT_ID,
+    clientSecret: env.CF_ACCESS_CLIENT_SECRET,
+    persona:      route.persona,
+  });
+
+  // Store raw result in KV for pagination buttons (10-min TTL)
+  const cacheKey = `result:${randomState()}`;
+  await env.ASKIAM_TOKENS.put(cacheKey, JSON.stringify({
+    query, toolName: route.toolName, rawResult,
+  }), { expirationTtl: RESULT_TTL_S });
+
+  const pageSize  = mode === 'all' ? 0 : PAGE_SIZE;
+  const answer    = await answerQuery(query, route.toolName, rawResult, env.GEMINI_API_KEY, page, pageSize);
+  // Use Gemini's footer field to detect truncation — it contains "showing X of Y" when more exist
+  const hasMore   = mode !== 'all' && typeof answer === 'object' && !!answer.footer;
+  const msg       = buildBlockKitMessage(answer, cacheKey, page, hasMore);
+  await postToResponseUrl(responseUrl, msg);
+}
+
+// ---------------------------------------------------------------------------
+// Route: POST /slack/action  (Block Kit button callbacks)
+// ---------------------------------------------------------------------------
+async function handleAction(request, env, ctx) {
+  const rawBody = await request.text();
+
+  const valid = await verifySlackSignature(rawBody, env.SLACK_SIGNING_SECRET, request);
+  if (!valid) return new Response('Unauthorized', { status: 401 });
+
+  // Slack sends payload as URL-encoded JSON in the 'payload' field
+  const params  = new URLSearchParams(rawBody);
+  const payload = JSON.parse(params.get('payload') ?? '{}');
+
+  const action      = payload.actions?.[0];
+  const responseUrl = payload.response_url;
+
+  if (!action || !responseUrl) {
+    return new Response('ok', { status: 200 });
+  }
+
+  // Ack immediately — Slack requires a response within 3s
+  ctx.waitUntil((async () => {
+    try {
+      const actionData = JSON.parse(action.value ?? '{}');
+
+      // ── Suggested query button ───────────────────────────────────────────
+      if (actionData.suggestedQuery) {
+        const userId = payload.user?.id ?? '';
+        const stored = await env.ASKIAM_TOKENS.get(`token:${userId}`, { type: 'json' }).catch(() => null);
+        if (!stored?.access_token) {
+          await postToResponseUrl(responseUrl, '🔒 Session expired — run `/askiam` again to re-authenticate.');
+          return;
+        }
+        // Post the result directly — no intermediate ack to avoid stale messages
+        await executeQuery(actionData.suggestedQuery, stored.access_token, responseUrl, env);
+        return;
+      }
+
+      // ── Pagination button ────────────────────────────────────────────────
+      const { cacheKey, page, mode } = actionData;
+      const cached = await env.ASKIAM_TOKENS.get(cacheKey, { type: 'json' }).catch(() => null);
+
+      if (!cached) {
+        await postToResponseUrl(responseUrl, '⚠️ Results expired — please run your `/askiam` query again.');
+        return;
+      }
+
+      const { query, toolName, rawResult } = cached;
+      const pageSize = mode === 'all' ? 0 : PAGE_SIZE;
+      const answer   = await answerQuery(query, toolName, rawResult, env.GEMINI_API_KEY, page, pageSize);
+      const hasMore  = mode !== 'all' && typeof answer === 'object' && !!answer.footer;
+      const msg      = buildBlockKitMessage(answer, cacheKey, page, hasMore);
+
+      await fetch(responseUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ replace_original: true, response_type: 'ephemeral', ...msg }),
+      });
+    } catch (err) {
+      console.error('[AskIAM action]', err.message);
+      await postToResponseUrl(responseUrl, `❌ Error: ${err.message}`);
+    }
+  })());
+
+  return new Response('', { status: 200 });
 }
 
 // ---------------------------------------------------------------------------
@@ -142,9 +338,16 @@ async function handleSlashCommand(request, env, ctx) {
   if (!query) {
     return new Response(
       JSON.stringify({ response_type: 'ephemeral', text:
-        '*AskIAM* — Usage: `/askiam <question>`\nExamples:\n' +
-        '• `/askiam count all users`\n• `/askiam list all groups`\n' +
-        '• `/askiam list applications`\n• `/askiam show MFA for <user_id>`'
+        '*AskIAM* — Usage: `/askiam <question>`\n\n' +
+        '*Admin:* users · groups · applications · MFA · directory\n' +
+        '• `/askiam how many users do we have`\n' +
+        '• `/askiam list groups with Admin in the name`\n' +
+        '• `/askiam reset password for john@acme.com`\n\n' +
+        '*Self-service:* access requests · my MFA · password reset\n' +
+        '• `/askiam what apps can I request access to`\n' +
+        '• `/askiam show my pending access requests`\n' +
+        '• `/askiam show pending approvals`\n' +
+        '• `/askiam show my MFA enrollments`'
       }),
       { headers: { 'Content-Type': 'application/json' } },
     );
@@ -154,12 +357,10 @@ async function handleSlashCommand(request, env, ctx) {
   const stored = await env.ASKIAM_TOKENS.get(`token:${userId}`, { type: 'json' }).catch(() => null);
 
   if (stored?.access_token) {
-    // Fire query in background; return ack immediately
     ctx.waitUntil((async () => {
       try {
         await executeQuery(query, stored.access_token, responseUrl, env);
       } catch (err) {
-        // If the token is stale, try refreshing once
         if (stored.refresh_token && err.message.includes('401')) {
           try {
             const refreshed = await refreshAccessToken(stored.refresh_token, env);
@@ -168,8 +369,7 @@ async function handleSlashCommand(request, env, ctx) {
               refresh_token: refreshed.refresh_token ?? stored.refresh_token,
             }));
             await executeQuery(query, refreshed.access_token, responseUrl, env);
-          } catch (refreshErr) {
-            // Refresh failed — clear token and ask user to re-auth
+          } catch {
             await env.ASKIAM_TOKENS.delete(`token:${userId}`);
             await postToResponseUrl(responseUrl, '🔒 Your session expired. Please run `/askiam` again to re-authenticate.');
           }
@@ -181,7 +381,7 @@ async function handleSlashCommand(request, env, ctx) {
     })());
 
     return new Response(
-      JSON.stringify({ response_type: 'ephemeral', text: '🔍 Looking that up...' }),
+      JSON.stringify({ response_type: 'ephemeral', text: '🔎 On it — checking IBM Verify...' }),
       { headers: { 'Content-Type': 'application/json' } },
     );
   }
@@ -191,13 +391,8 @@ async function handleSlashCommand(request, env, ctx) {
   const state       = randomState();
   const redirectUri = `${env.WORKER_BASE_URL}/oauth/callback`;
 
-  // Store PKCE state + original query in KV (TTL = 5 min)
   await env.ASKIAM_TOKENS.put(`state:${state}`, JSON.stringify({
-    userId,
-    verifier,
-    query,
-    responseUrl,
-    redirectUri,
+    userId, verifier, query, responseUrl, redirectUri,
   }), { expirationTtl: Math.ceil(STATE_TTL_MS / 1000) });
 
   const authUrl = new URL(AUTH_URL);
@@ -237,17 +432,14 @@ async function handleOAuthCallback(request, env) {
       { status: 400, headers: { 'Content-Type': 'text/html' } });
   }
 
-  // Retrieve PKCE state
   const stored = await env.ASKIAM_TOKENS.get(`state:${state}`, { type: 'json' }).catch(() => null);
   if (!stored) {
     return new Response('<html><body><p>Authentication session expired or already used. Please run <code>/askiam</code> again.</p></body></html>',
       { status: 400, headers: { 'Content-Type': 'text/html' } });
   }
 
-  // Clean up state entry immediately (one-time use)
   await env.ASKIAM_TOKENS.delete(`state:${state}`);
 
-  // Exchange code for tokens
   let tokens;
   try {
     tokens = await exchangeCode(code, stored.verifier, stored.redirectUri, env);
@@ -257,17 +449,12 @@ async function handleOAuthCallback(request, env) {
       { status: 500, headers: { 'Content-Type': 'text/html' } });
   }
 
-  // Persist token in KV (no TTL — we rely on refresh)
   await env.ASKIAM_TOKENS.put(`token:${stored.userId}`, JSON.stringify({
     access_token:  tokens.access_token,
     refresh_token: tokens.refresh_token ?? null,
   }));
 
-  // Fire the original query in the background
   if (stored.query && stored.responseUrl) {
-    // Can't use ctx.waitUntil here (no ctx in this route handler),
-    // so fire-and-forget with a plain untracked promise — acceptable since
-    // the callback response is a static HTML page the user immediately closes.
     executeQuery(stored.query, tokens.access_token, stored.responseUrl, env)
       .catch(err => console.error('[OAuth callback query]', err.message));
   }
@@ -291,6 +478,8 @@ export default {
     switch (url.pathname) {
       case '/slack/command':
         return handleSlashCommand(request, env, ctx);
+      case '/slack/action':
+        return handleAction(request, env, ctx);
       case '/oauth/callback':
         return handleOAuthCallback(request, env);
       case '/health':

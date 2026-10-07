@@ -19,3 +19,11 @@ GEMINI_API_KEY=your-gemini-api-key-here
 # Public base URL of this Worker — used to build the OAuth callback redirect URI
 # For local dev: use ngrok and set to the ngrok HTTPS URL
 WORKER_BASE_URL=https://askiam-bot.your-subdomain.workers.dev
+
+# Cloudflare Access service token — allows the Worker to bypass Bot Fight Mode
+# on mcp.baronia.work without a paid WAF.
+# Zero Trust → Access → Service Auth → Service Tokens → Create → copy both values.
+# Then: Zero Trust → Access → Applications → Add → Self-hosted → mcp.baronia.work
+#       Policy: Service Auth → select the token above.
+CF_ACCESS_CLIENT_ID=your-cf-access-client-id.access
+CF_ACCESS_CLIENT_SECRET=your-cf-access-client-secret

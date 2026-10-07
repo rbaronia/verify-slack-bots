@@ -1,16 +1,9 @@
-const GEMINI_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent';
-
-const ALLOWED_TOOLS = [
-  'ibm_verify_get_user_count',
-  'ibm_verify_get_group_count',
-  'ibm_verify_list_users',
-  'ibm_verify_get_user',
-  'ibm_verify_list_groups',
-  'ibm_verify_list_user_mfa_enrollments',
-  'ibm_verify_list_applications',
-  'ibm_verify_list_all_mfa_enrollments',
+const GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.5-flash',
+  'gemini-2.5-flash',
 ];
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 function extractJson(text) {
   // Strip markdown fences if present
@@ -20,23 +13,33 @@ function extractJson(text) {
 }
 
 async function generateContent(systemInstruction, userText, apiKey) {
-  const resp = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemInstruction }] },
-      contents: [{ role: 'user', parts: [{ text: userText }] }],
-    }),
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
   });
-  if (!resp.ok) {
-    const errBody = await resp.text().catch(() => '');
-    throw new Error(`Gemini API error: ${resp.status} — ${errBody.slice(0, 200)}`);
+  const delays = [0, 3000, 6000]; // immediate + 2 retries
+  for (const model of GEMINI_MODELS) {
+    const url = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
+    for (const delay of delays) {
+      if (delay > 0) await new Promise(r => setTimeout(r, delay));
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      if (resp.status === 429 || resp.status === 503) continue;
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => '');
+        if (resp.status === 404) break; // model gone — try next
+        throw new Error(`Gemini API error: ${resp.status} — ${errBody.slice(0, 200)}`);
+      }
+      const data = await resp.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error(`Gemini returned no text — finish_reason: ${data.candidates?.[0]?.finishReason ?? 'unknown'}`);
+      return text;
+    }
   }
-  const data = await resp.json();
-  // Guard against missing/blocked candidates
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error(`Gemini returned no text — finish_reason: ${data.candidates?.[0]?.finishReason ?? 'unknown'}`);
-  return text;
+  throw new Error('Gemini unavailable — all models returned 429/503. Please try again in a moment.');
 }
 
 /**
