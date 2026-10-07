@@ -1,0 +1,7 @@
+{
+  "name": "verify-bot",
+  "type": "module",
+  "devDependencies": {
+    "wrangler": "^4.148.0"
+  }
+}

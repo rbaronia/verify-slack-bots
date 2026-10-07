@@ -1,0 +1,30 @@
+# Copy this file to .dev.vars and fill in real values before running `wrangler dev`.
+# .dev.vars is gitignored — never commit secrets.
+
+# IBM Verify SaaS — API client for reading audit events
+# baronia.verify.ibm.com → Security → API access → API clients
+# Client must have: Manage reports + Read reports entitlements
+EVENTS_CLIENT_ID=your-events-client-id-here
+EVENTS_CLIENT_SECRET=your-events-client-secret-here
+
+# Shared secret to authenticate IBM Verify Notification Webhook POSTs.
+# Generate with: openssl rand -hex 32
+# Configure at: baronia.verify.ibm.com → Security → Notification webhooks → Authentication
+VERIFY_WEBHOOK_SECRET=generate-with-openssl-rand-hex-32
+
+# Google Gemini API key — event classification and report narratives
+# Model: gemini-3.5-flash-lite
+# Get at: https://aistudio.google.com/apikey
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# Slack app signing secret
+# Slack app dashboard → Basic Information → App Credentials → Signing Secret
+SLACK_SIGNING_SECRET=your-slack-signing-secret-here
+
+# Slack Incoming Webhook URL — posts alerts and reports to the channel
+# Slack app dashboard → Incoming Webhooks → Webhook URL
+SLACK_ALERT_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+
+# Min severity (0-10) to fire a real-time alert. Default: 6
+# Auth failures are hard-floored at 7 regardless of this setting.
+SEVERITY_THRESHOLD=6

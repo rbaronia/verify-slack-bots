@@ -1,0 +1,21 @@
+# Copy this file to .dev.vars and fill in real values before running `wrangler dev`.
+# .dev.vars is gitignored — never commit secrets.
+
+# IBM Verify OAuth Subject app — authorization_code + PKCE
+# Register at: your-tenant.verify.ibm.com → Applications → add OIDC application
+# Must have redirect URI: https://<WORKER_BASE_URL>/oauth/callback
+VERIFY_CLIENT_ID=your-subject-app-client-id-here
+VERIFY_CLIENT_SECRET=your-subject-app-client-secret-here
+
+# Slack app signing secret
+# Slack app dashboard → Basic Information → App Credentials → Signing Secret
+SLACK_SIGNING_SECRET=your-slack-signing-secret-here
+
+# Google Gemini API key — query routing and answer summarisation
+# Model: gemini-3.5-flash-lite
+# Get at: https://aistudio.google.com/apikey
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# Public base URL of this Worker — used to build the OAuth callback redirect URI
+# For local dev: use ngrok and set to the ngrok HTTPS URL
+WORKER_BASE_URL=https://askiam-bot.your-subdomain.workers.dev

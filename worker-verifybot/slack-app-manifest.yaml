@@ -1,0 +1,31 @@
+display_information:
+  name: VerifyBot
+  description: IBM Verify IAM alerts and on-demand activity reports
+  background_color: "#0530AD"
+features:
+  bot_user:
+    display_name: VerifyBot
+    always_online: true
+  slash_commands:
+    - command: /report
+      url: https://verify-bot.baronia.workers.dev/slack/command
+      description: Pull an IBM Verify activity report (7 / 30 / 90 days)
+      usage_hint: "7 | 30 | 90  (default: shows report picker buttons)"
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.public
+      - commands
+      - app_mentions:read
+      - incoming-webhook
+settings:
+  event_subscriptions:
+    request_url: https://verify-bot.baronia.workers.dev/slack/events
+    bot_events:
+      - app_mention
+  interactivity:
+    is_enabled: true
+    request_url: https://verify-bot.baronia.workers.dev/slack/actions
+  socket_mode_enabled: false
