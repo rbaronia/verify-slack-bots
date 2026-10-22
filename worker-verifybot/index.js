@@ -233,7 +233,11 @@ async function handleSlackEvents(request, env) {
 // Cron handler: poll IBM Verify Events API every minute
 // ---------------------------------------------------------------------------
 async function handleScheduled(env) {
-  const KV_KEY = 'lastPolledTime';
+  const KV_KEY         = 'lastPolledTime';
+  // Minimum interval between KV writes — only flush lastPolledTime if this many
+  // milliseconds have elapsed since the stored value.  Keeps writes to ≤12/hour
+  // (every 5 min) even when events arrive every minute, vs the old 1,440/day.
+  const MIN_WRITE_MS   = 5 * 60 * 1000;
 
   // Read last poll time from KV; default to 2 minutes ago on first run
   let lastPolled = await env.VERIFY_BOT_STATE.get(KV_KEY);
@@ -259,8 +263,14 @@ async function handleScheduled(env) {
 
   console.log(`[POLL] fetched ${events.length} events since ${lastPolled}`);
 
-  // Save new poll time BEFORE processing so a crash doesn't re-process events
-  await env.VERIFY_BOT_STATE.put(KV_KEY, new Date().toISOString());
+  // Only write lastPolledTime when events were found OR the minimum interval
+  // has elapsed.  Eliminates 1,440 unconditional puts/day (the main cause of
+  // blowing the free-tier 1,000 puts/day KV limit).
+  const now = new Date();
+  const lastPolledMs = new Date(lastPolled).getTime();
+  if (events.length > 0 || now.getTime() - lastPolledMs >= MIN_WRITE_MS) {
+    await env.VERIFY_BOT_STATE.put(KV_KEY, now.toISOString());
+  }
 
   const threshold  = parseInt(env.SEVERITY_THRESHOLD ?? '6', 10);
   // Cap alerts per cron run to prevent runaway Gemini quota use during burst events.
