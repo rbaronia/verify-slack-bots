@@ -99,6 +99,7 @@ export async function fetchEventsSince(fromTime, bearerToken) {
         Authorization: `Bearer ${bearerToken}`,
         Accept: 'application/json',
       },
+      signal: AbortSignal.timeout(20000),
     });
 
     if (resp.status === 204) break; // no content

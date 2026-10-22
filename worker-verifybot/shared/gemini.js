@@ -12,12 +12,12 @@ function extractJson(text) {
   return JSON.parse(raw.trim());
 }
 
-async function generateContent(systemInstruction, userText, apiKey) {
+async function generateContent(systemInstruction, userText, apiKey, { timeoutMs = 12000 } = {}) {
   const body = JSON.stringify({
     systemInstruction: { parts: [{ text: systemInstruction }] },
     contents: [{ role: 'user', parts: [{ text: userText }] }],
   });
-  const delays = [0, 3000, 6000]; // immediate + 2 retries
+  const delays = [0, 1500]; // immediate + 1 quick retry (was 0+3s+6s — too slow for Workers)
   for (const model of GEMINI_MODELS) {
     const url = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
     for (const delay of delays) {
@@ -26,6 +26,7 @@ async function generateContent(systemInstruction, userText, apiKey) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (resp.status === 429 || resp.status === 503) continue;
       if (!resp.ok) {
