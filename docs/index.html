@@ -6,226 +6,270 @@
 <title>verify-slack-bots — IBM Verify + Slack</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; font-size: 15px; line-height: 1.65; color: #1f2328; background: #fff; }
-a { color: #3b82d4; text-decoration: none; }
+body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; font-size: 14px; line-height: 1.6; color: #161616; background: #f4f4f4; }
+a { color: #0f62fe; text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* ── TOP NAV ── */
-.topnav { background: #161616; color: #f4f4f4; display: flex; align-items: center; height: 48px; padding: 0 24px; gap: 0; position: sticky; top: 0; z-index: 100; }
-.topnav-brand { display: flex; align-items: center; gap: 12px; color: #f4f4f4; font-size: 14px; font-weight: 600; letter-spacing: 0.1px; text-decoration: none; border-right: 1px solid #393939; padding-right: 16px; margin-right: 16px; flex-shrink: 0; }
-.topnav-brand svg { flex-shrink: 0; }
-.topnav-links { display: flex; gap: 0; flex: 1; }
-.topnav-links a { color: #c6c6c6; font-size: 13.5px; padding: 0 16px; height: 48px; display: flex; align-items: center; text-decoration: none; border-bottom: 2px solid transparent; transition: color 0.1s, border-color 0.1s; white-space: nowrap; }
-.topnav-links a:hover { color: #f4f4f4; background: #262626; }
-.topnav-links a.active { color: #f4f4f4; border-bottom-color: #4589ff; }
-.topnav-right { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-.topnav-right a { color: #c6c6c6; padding: 8px 10px; display: flex; align-items: center; text-decoration: none; }
-.topnav-right a:hover { color: #f4f4f4; background: #262626; border-radius: 4px; }
+/* ── TOP NAV BAR (2 rows like screenshot) ── */
+.topbar { background: #161616; height: 48px; display: flex; align-items: center; padding: 0 16px; position: sticky; top: 0; z-index: 200; }
+.topbar-brand { display: flex; align-items: center; gap: 10px; color: #fff; font-size: 14px; font-weight: 600; text-decoration: none; }
+.topbar-ibm { background: #0f62fe; color: #fff; font-size: 11px; font-weight: 900; padding: 2px 5px; letter-spacing: 1px; border-radius: 1px; margin-right: 4px; }
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.topbar-right a { color: #c6c6c6; padding: 6px 8px; display: flex; align-items: center; text-decoration: none; border-radius: 2px; }
+.topbar-right a:hover { background: #393939; color: #fff; }
+.topbar-search { display: flex; align-items: center; gap: 8px; background: #393939; border: 1px solid #525252; padding: 0 12px; height: 32px; border-radius: 2px; color: #c6c6c6; font-size: 13px; cursor: text; }
 
-/* ── HERO BANNER ── */
-.hero { background: #0f62fe; color: #fff; padding: 52px 40px; }
-.hero-inner { max-width: 1100px; margin: 0 auto; }
-.hero h1 { font-size: 2.25rem; font-weight: 300; letter-spacing: -0.5px; line-height: 1.2; margin-bottom: 16px; }
-.hero h1 strong { font-weight: 600; }
-.hero p { font-size: 1rem; opacity: 0.88; max-width: 680px; line-height: 1.7; margin-bottom: 28px; }
+.subnav { background: #262626; height: 40px; display: flex; align-items: stretch; padding: 0 16px; position: sticky; top: 48px; z-index: 199; border-bottom: 1px solid #393939; }
+.subnav a { color: #c6c6c6; font-size: 13px; padding: 0 14px; display: flex; align-items: center; text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; }
+.subnav a:hover { color: #fff; background: #393939; }
+.subnav a.active { color: #fff; border-bottom-color: #4589ff; }
+
+/* ── PAGE BODY: 3-col layout ── */
+.page-body { display: flex; max-width: 1280px; margin: 0 auto; min-height: calc(100vh - 88px); }
+
+/* LEFT SIDEBAR */
+.leftnav { width: 256px; flex-shrink: 0; background: #fff; border-right: 1px solid #e0e0e0; padding: 24px 0; position: sticky; top: 88px; height: calc(100vh - 88px); overflow-y: auto; }
+.leftnav-section { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: #525252; padding: 16px 20px 6px; }
+.leftnav a { display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: #161616; padding: 8px 20px; text-decoration: none; }
+.leftnav a:hover { background: #f4f4f4; color: #0f62fe; }
+.leftnav a.active { background: #edf5ff; color: #0f62fe; font-weight: 600; border-left: 3px solid #0f62fe; padding-left: 17px; }
+.leftnav-info { color: #8d8d8d; font-size: 12px; flex-shrink: 0; }
+
+/* MAIN CONTENT */
+.main-content { flex: 1; background: #fff; padding: 40px 48px 80px; min-width: 0; border-right: 1px solid #e0e0e0; }
+
+/* RIGHT "ON THIS PAGE" */
+.rightnav { width: 200px; flex-shrink: 0; padding: 40px 20px; position: sticky; top: 88px; height: calc(100vh - 88px); overflow-y: auto; }
+.rightnav-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: #525252; margin-bottom: 12px; }
+.rightnav a { display: block; font-size: 12.5px; color: #525252; padding: 4px 0; text-decoration: none; }
+.rightnav a:hover { color: #0f62fe; }
+
+/* ── HERO BANNER (blue, index only) ── */
+.hero-banner { background: #0f62fe; color: #fff; padding: 48px 48px 52px; margin: -40px -48px 48px; }
+.hero-banner h1 { font-size: 2rem; font-weight: 300; line-height: 1.25; margin-bottom: 14px; }
+.hero-banner h1 strong { font-weight: 600; }
+.hero-banner p { font-size: 0.9375rem; opacity: 0.9; max-width: 620px; line-height: 1.7; margin-bottom: 24px; }
 .hero-badges { display: flex; flex-wrap: wrap; gap: 8px; }
-.hero-badge { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: #fff; font-size: 12px; font-weight: 500; padding: 4px 12px; border-radius: 2px; }
+.hero-badge { background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.35); color: #fff; font-size: 11.5px; padding: 3px 10px; border-radius: 2px; }
 
-/* ── MAIN CONTENT ── */
-.content { max-width: 1100px; margin: 0 auto; padding: 48px 40px 80px; }
-
-/* ── SECTION HEADINGS ── */
+/* ── SECTION ── */
 .section { margin-bottom: 52px; }
-.section-heading { font-size: 1.25rem; font-weight: 600; color: #161616; margin-bottom: 4px; }
-.section-rule { border: none; border-top: 2px solid #0f62fe; width: 32px; margin: 8px 0 24px; }
-.section p { color: #525252; margin-bottom: 10px; max-width: 720px; }
+.section-title { font-size: 1.4rem; font-weight: 400; color: #161616; margin-bottom: 2px; }
+.section-rule { border: none; border-top: 2px solid #0f62fe; margin: 10px 0 24px; }
+.section p { color: #525252; margin-bottom: 14px; font-size: 14px; max-width: 720px; }
+.section h3 { font-size: 0.875rem; font-weight: 600; color: #161616; margin: 20px 0 8px; }
 
 /* ── WORKER CARDS ── */
-.worker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; background: #e0e0e0; border: 1px solid #e0e0e0; margin-bottom: 0; }
+.worker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #e0e0e0; border: 1px solid #e0e0e0; margin: 0 0 8px; }
 @media (max-width: 640px) { .worker-grid { grid-template-columns: 1fr; } }
-.worker-card { background: #fff; padding: 32px; position: relative; }
-.worker-card-icon { font-size: 2rem; margin-bottom: 12px; display: block; }
-.worker-card h3 { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #0f62fe; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
-.worker-card p { font-size: 0.875rem; color: #525252; margin-bottom: 16px; line-height: 1.6; }
-.worker-card ul { list-style: none; padding: 0; margin-bottom: 20px; }
-.worker-card ul li { font-size: 0.8125rem; color: #525252; padding: 4px 0; padding-left: 12px; position: relative; border-top: 1px solid #f4f4f4; }
-.worker-card ul li::before { content: ""; position: absolute; left: 0; top: 50%; width: 4px; height: 1px; background: #0f62fe; margin-top: 1px; }
-.worker-card-link { font-size: 0.875rem; font-weight: 600; color: #0f62fe; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
-.worker-card-link:hover { text-decoration: underline; }
-.worker-card-url { font-size: 0.75rem; color: #8d8d8d; margin-top: 8px; font-family: "SF Mono","Fira Code",Consolas,monospace; }
+.worker-card { background: #fff; padding: 28px 28px 24px; }
+.worker-card-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: #0f62fe; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.worker-card h3 { font-size: 1rem; font-weight: 600; color: #161616; margin-bottom: 8px; }
+.worker-card p { font-size: 13px; color: #525252; margin-bottom: 14px; line-height: 1.55; }
+.worker-card ul { list-style: none; padding: 0; margin-bottom: 16px; }
+.worker-card ul li { font-size: 13px; color: #525252; padding: 5px 0 5px 14px; border-top: 1px solid #f4f4f4; position: relative; }
+.worker-card ul li::before { content: ""; position: absolute; left: 0; top: 13px; width: 5px; height: 1px; background: #0f62fe; }
+.worker-card-link { font-size: 13px; font-weight: 600; color: #0f62fe; }
+.worker-card-url { font-size: 11.5px; color: #8d8d8d; font-family: "SF Mono","Fira Code",Consolas,monospace; margin-top: 6px; }
 
-/* ── FEATURE MINI CARDS ── */
-.mini-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; background: #e0e0e0; border: 1px solid #e0e0e0; }
-@media (max-width: 800px) { .mini-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 480px) { .mini-grid { grid-template-columns: 1fr; } }
-.mini-card { background: #fff; padding: 24px 20px; }
-.mini-card-icon { font-size: 1.4rem; margin-bottom: 10px; display: block; }
-.mini-card h4 { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #0f62fe; margin-bottom: 8px; }
-.mini-card p { font-size: 0.8rem; color: #525252; line-height: 1.55; }
+/* ── MINI CAPABILITY CARDS ── */
+.mini-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; background: #e0e0e0; border: 1px solid #e0e0e0; }
+@media (max-width: 780px) { .mini-grid { grid-template-columns: 1fr 1fr; } }
+.mini-card { background: #fff; padding: 22px 20px; }
+.mini-card-icon { font-size: 1.3rem; margin-bottom: 8px; display: block; }
+.mini-card h4 { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #0f62fe; margin-bottom: 6px; }
+.mini-card p { font-size: 12.5px; color: #525252; line-height: 1.55; }
 
 /* ── WHY TWO ── */
-.why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media (max-width: 640px) { .why-grid { grid-template-columns: 1fr; } }
-.why-card { background: #f4f4f4; padding: 24px; border-left: 3px solid #0f62fe; }
-.why-card h4 { font-size: 0.875rem; font-weight: 600; color: #161616; margin-bottom: 8px; }
-.why-card p { font-size: 0.875rem; color: #525252; margin: 0; }
+.why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+@media (max-width: 600px) { .why-grid { grid-template-columns: 1fr; } }
+.why-card { background: #f4f4f4; padding: 20px 20px 20px 18px; border-left: 3px solid #0f62fe; }
+.why-card h4 { font-size: 13px; font-weight: 600; color: #161616; margin-bottom: 6px; }
+.why-card p { font-size: 13px; color: #525252; margin: 0; }
 
 /* ── ARCH DIAGRAM ── */
-.diagram { background: #161616; border-radius: 4px; padding: 24px 28px; overflow-x: auto; }
-.diagram pre { font-family: "SF Mono","Fira Code",Consolas,monospace; font-size: 12px; line-height: 1.8; color: #a8c4ff; white-space: pre; }
+.diagram { background: #161616; border-radius: 2px; padding: 20px 24px; overflow-x: auto; }
+.diagram pre { font-family: "SF Mono","Fira Code",Consolas,monospace; font-size: 11.5px; line-height: 1.85; color: #a8c4ff; white-space: pre; }
 
 /* ── QUICK START ── */
-.qs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; background: #e0e0e0; border: 1px solid #e0e0e0; }
-@media (max-width: 640px) { .qs-grid { grid-template-columns: 1fr; } }
-.qs-card { background: #f4f4f4; padding: 24px; }
-.qs-card h4 { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #0f62fe; margin-bottom: 12px; }
-.qs-card pre { font-family: "SF Mono","Fira Code",Consolas,monospace; font-size: 12px; line-height: 1.75; color: #161616; white-space: pre-wrap; }
+.qs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #e0e0e0; border: 1px solid #e0e0e0; }
+@media (max-width: 600px) { .qs-grid { grid-template-columns: 1fr; } }
+.qs-card { background: #f4f4f4; padding: 20px 22px; }
+.qs-card h4 { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #0f62fe; margin-bottom: 12px; }
+.qs-card pre { font-family: "SF Mono","Fira Code",Consolas,monospace; font-size: 11.5px; line-height: 1.75; color: #161616; white-space: pre-wrap; }
 
 /* ── PREREQ TABLE ── */
-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-th { text-align: left; padding: 10px 16px; background: #e0e0e0; font-weight: 600; color: #161616; border-bottom: 1px solid #c6c6c6; }
-td { padding: 10px 16px; border-bottom: 1px solid #e0e0e0; color: #525252; vertical-align: top; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 10px 14px; background: #f4f4f4; font-weight: 600; color: #161616; border-bottom: 1px solid #c6c6c6; }
+td { padding: 10px 14px; border-bottom: 1px solid #e0e0e0; color: #525252; vertical-align: top; }
 tr:last-child td { border-bottom: none; }
-td code { background: #e8e8e8; padding: 1px 5px; border-radius: 2px; font-family: "SF Mono","Fira Code",Consolas,monospace; font-size: 11.5px; color: #161616; }
+td code { background: #e8e8e8; padding: 1px 5px; border-radius: 2px; font-family: "SF Mono","Fira Code",Consolas,monospace; font-size: 11px; color: #161616; }
 
 /* ── FOOTER ── */
-.site-footer { background: #161616; color: #8d8d8d; text-align: center; padding: 24px; font-size: 12px; }
+.site-footer { background: #161616; color: #8d8d8d; text-align: center; padding: 20px; font-size: 12px; }
 .site-footer a { color: #78a9ff; }
+
+@media (max-width: 900px) { .leftnav, .rightnav { display: none; } .main-content { padding: 28px 20px 60px; } }
 </style>
 </head>
 <body>
 
-<!-- TOP NAV -->
-<nav class="topnav">
-  <a class="topnav-brand" href="index.html">
-    <svg width="20" height="20" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="2" fill="#4589ff"/><text x="5" y="22" font-family="sans-serif" font-size="14" font-weight="700" fill="white">VS</text></svg>
+<!-- TOP BAR -->
+<div class="topbar">
+  <a class="topbar-brand" href="index.html">
+    <span class="topbar-ibm">IBM</span>
     verify-slack-bots
   </a>
-  <div class="topnav-links">
-    <a href="index.html" class="active">Home</a>
-    <a href="verifybot.html">VerifyBot</a>
-    <a href="askiam.html">AskIAM</a>
-    <a href="index.html#architecture">Architecture</a>
-    <a href="index.html#quickstart">Quick Start</a>
-    <a href="index.html#prerequisites">Prerequisites</a>
-  </div>
-  <div class="topnav-right">
+  <div class="topbar-right">
+    <div class="topbar-search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      Search
+    </div>
     <a href="https://github.com/rbaronia/verify-slack-bots" title="GitHub">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
     </a>
   </div>
-</nav>
-
-<!-- HERO -->
-<div class="hero">
-  <div class="hero-inner">
-    <h1><strong>IBM Verify</strong> Slack Bots</h1>
-    <p>Two Cloudflare Workers that connect IBM Verify SaaS to Slack — real-time AI-classified security alerts with digest reports, and natural-language IAM queries through the <code style="background:rgba(255,255,255,0.15);padding:2px 6px;border-radius:2px;">/askiam</code> slash command.</p>
-    <div class="hero-badges">
-      <span class="hero-badge">Cloudflare Workers</span>
-      <span class="hero-badge">IBM Verify SaaS</span>
-      <span class="hero-badge">Slack</span>
-      <span class="hero-badge">Gemini 3.5 Flash Lite</span>
-      <span class="hero-badge">MCP Streamable HTTP</span>
-      <span class="hero-badge">OAuth 2.0 PKCE</span>
-    </div>
-  </div>
 </div>
 
-<div class="content">
+<!-- SUB NAV -->
+<nav class="subnav">
+  <a href="index.html" class="active">Home</a>
+  <a href="verifybot.html">VerifyBot</a>
+  <a href="askiam.html">AskIAM</a>
+  <a href="index.html#architecture">Architecture</a>
+  <a href="index.html#quickstart">Quick Start</a>
+  <a href="index.html#prerequisites">Prerequisites</a>
+</nav>
 
-  <!-- WORKERS -->
-  <div class="section">
-    <div class="section-heading">What's in this repo?</div>
-    <hr class="section-rule">
-    <div class="worker-grid">
-      <div class="worker-card">
-        <h3>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
-          VerifyBot
-        </h3>
-        <p>Real-time IBM Verify audit event alerts posted to Slack with AI-powered severity scoring, plus automated daily, weekly, monthly, and quarterly digest reports.</p>
-        <ul>
-          <li>Polls IBM Verify Events API every minute via Cloudflare cron</li>
-          <li>Receives instant push events via IBM Verify notification webhook</li>
-          <li>Gemini classifies each event — severity 0–10 with hard floors</li>
-          <li>Posts Block Kit alerts to <code>#ibm-verify-alerts</code></li>
-          <li>Scheduled digest reports: daily, 7-day, 30-day, 90-day</li>
-          <li><code>/report</code> slash command for on-demand reports</li>
-        </ul>
-        <a class="worker-card-link" href="verifybot.html">Full documentation →</a>
-        <div class="worker-card-url">verify-bot.baronia.workers.dev</div>
-      </div>
-      <div class="worker-card">
-        <h3>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
-          AskIAM
-        </h3>
-        <p>Natural-language IAM queries via the <code>/askiam</code> Slack slash command. Each Slack user authenticates with their own IBM Verify identity through OAuth 2.0 Authorization Code + PKCE.</p>
-        <ul>
-          <li>Per-user OAuth 2.0 auth-code + PKCE flow — no shared credentials</li>
-          <li>Tokens cached in Cloudflare KV and auto-refreshed on 401</li>
-          <li>Gemini routes queries to IBM Verify MCP tools automatically</li>
-          <li>Admin ops: users, groups, apps, MFA, directory management</li>
-          <li>Self-service: access requests, approvals, my MFA enrollments</li>
-          <li>Paginated Block Kit results with Next Page / Show All buttons</li>
-        </ul>
-        <a class="worker-card-link" href="askiam.html">Full documentation →</a>
-        <div class="worker-card-url">askiam-bot.baronia.workers.dev</div>
+<div class="page-body">
+
+  <!-- LEFT NAV -->
+  <nav class="leftnav">
+    <div class="leftnav-section">Workers</div>
+    <a href="index.html" class="active">Overview <span class="leftnav-info">ⓘ</span></a>
+    <a href="verifybot.html">VerifyBot <span class="leftnav-info">ⓘ</span></a>
+    <a href="askiam.html">AskIAM <span class="leftnav-info">ⓘ</span></a>
+    <div class="leftnav-section">Setup</div>
+    <a href="index.html#quickstart">Quick Start</a>
+    <a href="index.html#prerequisites">Prerequisites</a>
+    <a href="index.html#architecture">Architecture</a>
+    <div class="leftnav-section">Reference</div>
+    <a href="verifybot.html#secrets">VerifyBot Secrets</a>
+    <a href="askiam.html#secrets">AskIAM Secrets</a>
+    <a href="askiam.html#mcp-protocol">MCP Protocol</a>
+  </nav>
+
+  <!-- MAIN CONTENT -->
+  <main class="main-content">
+
+    <!-- HERO BANNER -->
+    <div class="hero-banner">
+      <h1><strong>IBM Verify</strong> Slack Bots</h1>
+      <p>Two Cloudflare Workers that connect IBM Verify SaaS to Slack — real-time AI-classified security alerts with digest reports, and natural-language IAM queries through the <code style="background:rgba(255,255,255,0.15);padding:1px 6px;border-radius:2px;">/askiam</code> slash command.</p>
+      <div class="hero-badges">
+        <span class="hero-badge">Cloudflare Workers</span>
+        <span class="hero-badge">IBM Verify SaaS</span>
+        <span class="hero-badge">Slack</span>
+        <span class="hero-badge">Gemini 3.5 Flash Lite</span>
+        <span class="hero-badge">MCP Streamable HTTP</span>
+        <span class="hero-badge">OAuth 2.0 PKCE</span>
       </div>
     </div>
-  </div>
 
-  <!-- KEY CAPABILITIES -->
-  <div class="section">
-    <div class="section-heading">Key capabilities</div>
-    <hr class="section-rule">
-    <div class="mini-grid">
-      <div class="mini-card">
-        <span class="mini-card-icon">🔍</span>
-        <h4>AI Classification</h4>
-        <p>Gemini 3.5 Flash Lite scores every event 0–10 with deterministic severity floors for auth failures, MFA removal, and privilege escalation.</p>
-      </div>
-      <div class="mini-card">
-        <span class="mini-card-icon">🔐</span>
-        <h4>Per-User OAuth</h4>
-        <p>Every Slack user completes their own IBM Verify PKCE flow. AskIAM never shares credentials — MCP calls run under the user's own identity.</p>
-      </div>
-      <div class="mini-card">
-        <span class="mini-card-icon">📊</span>
-        <h4>Digest Reports</h4>
-        <p>Automated Gemini-written narrative summaries posted to Slack on daily, weekly, monthly, and quarterly schedules — or on demand with <code>/report</code>.</p>
-      </div>
-      <div class="mini-card">
-        <span class="mini-card-icon">💬</span>
-        <h4>Natural Language</h4>
-        <p>Ask IAM questions in plain English. Gemini maps your query to the right IBM Verify MCP tool, calls it, and summarises the result — no syntax to learn.</p>
+    <!-- WORKERS -->
+    <div class="section" id="workers">
+      <div class="section-title">What's in this repo?</div>
+      <hr class="section-rule">
+      <div class="worker-grid">
+        <div class="worker-card">
+          <div class="worker-card-label">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+            Worker 1
+          </div>
+          <h3>VerifyBot</h3>
+          <p>Real-time IBM Verify audit event alerts with AI-powered severity scoring, plus automated daily, weekly, monthly, and quarterly digest reports.</p>
+          <ul>
+            <li>Polls IBM Verify Events API every minute via Cloudflare cron</li>
+            <li>Receives instant push events via IBM Verify notification webhook</li>
+            <li>Gemini classifies each event — severity 0–10 with hard floors</li>
+            <li>Posts Block Kit alerts to <code>#ibm-verify-alerts</code></li>
+            <li>Scheduled digest reports: daily, 7-day, 30-day, 90-day</li>
+            <li><code>/report</code> slash command for on-demand reports</li>
+          </ul>
+          <a class="worker-card-link" href="verifybot.html">Full documentation →</a>
+          <div class="worker-card-url">verify-bot.baronia.workers.dev</div>
+        </div>
+        <div class="worker-card">
+          <div class="worker-card-label">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+            Worker 2
+          </div>
+          <h3>AskIAM</h3>
+          <p>Natural-language IAM queries via the <code>/askiam</code> Slack slash command. Each Slack user authenticates with their own IBM Verify identity through OAuth 2.0 Authorization Code + PKCE.</p>
+          <ul>
+            <li>Per-user OAuth 2.0 auth-code + PKCE flow — no shared credentials</li>
+            <li>Tokens cached in Cloudflare KV and auto-refreshed on 401</li>
+            <li>Gemini routes queries to IBM Verify MCP tools automatically</li>
+            <li>Admin ops: users, groups, apps, MFA, directory management</li>
+            <li>Self-service: access requests, approvals, my MFA enrollments</li>
+            <li>Paginated Block Kit results with Next Page / Show All buttons</li>
+          </ul>
+          <a class="worker-card-link" href="askiam.html">Full documentation →</a>
+          <div class="worker-card-url">askiam-bot.baronia.workers.dev</div>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- WHY TWO WORKERS -->
-  <div class="section">
-    <div class="section-heading">Why two separate Workers?</div>
-    <hr class="section-rule">
-    <p>The IBM Verify MCP server only accepts <strong>user</strong> Bearer tokens obtained through an OAuth Authorization Code flow — it rejects headless <code>client_credentials</code> tokens. This forces a clean separation:</p>
-    <div class="why-grid" style="margin-top:20px;">
-      <div class="why-card">
-        <h4>🔔 VerifyBot — headless</h4>
-        <p>Uses <code>client_credentials</code> to call the IBM Verify Events API on a schedule. Cannot call the MCP server. No user interaction required — runs entirely via cron and webhook.</p>
-      </div>
-      <div class="why-card">
-        <h4>🤖 AskIAM — per-user identity</h4>
-        <p>Runs a real auth-code + PKCE flow for each Slack user. Caches tokens in KV. Calls the MCP server on the user's behalf — full identity context on every request.</p>
+    <!-- KEY CAPABILITIES -->
+    <div class="section" id="capabilities">
+      <div class="section-title">Key capabilities</div>
+      <hr class="section-rule">
+      <div class="mini-grid">
+        <div class="mini-card">
+          <span class="mini-card-icon">🔍</span>
+          <h4>AI Classification</h4>
+          <p>Gemini 3.5 Flash Lite scores every event 0–10. Deterministic floors ensure auth failures, MFA removal, and escalations are never under-scored.</p>
+        </div>
+        <div class="mini-card">
+          <span class="mini-card-icon">🔐</span>
+          <h4>Per-User OAuth</h4>
+          <p>Every Slack user completes their own IBM Verify PKCE flow. MCP calls run under the user's own identity — no shared credentials.</p>
+        </div>
+        <div class="mini-card">
+          <span class="mini-card-icon">📊</span>
+          <h4>Digest Reports</h4>
+          <p>Gemini-written narrative summaries posted to Slack on daily, weekly, monthly, and quarterly schedules, or on demand with <code>/report</code>.</p>
+        </div>
+        <div class="mini-card">
+          <span class="mini-card-icon">💬</span>
+          <h4>Natural Language</h4>
+          <p>Ask IAM questions in plain English. Gemini maps your query to the right IBM Verify MCP tool, calls it, and summarises the result.</p>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- ARCHITECTURE -->
-  <div class="section" id="architecture">
-    <div class="section-heading">Architecture overview</div>
-    <hr class="section-rule">
-    <div class="diagram"><pre>
+    <!-- WHY TWO WORKERS -->
+    <div class="section" id="why-two">
+      <div class="section-title">Why two separate Workers?</div>
+      <hr class="section-rule">
+      <p>The IBM Verify MCP server only accepts <strong>user</strong> Bearer tokens obtained through an OAuth Authorization Code flow — it rejects headless <code>client_credentials</code> tokens. This forces a clean architectural separation:</p>
+      <div class="why-grid">
+        <div class="why-card">
+          <h4>🔔 VerifyBot — headless</h4>
+          <p>Uses <code>client_credentials</code> to call the IBM Verify Events API on a schedule. Cannot call the MCP server. Runs entirely via cron and webhook — no user interaction.</p>
+        </div>
+        <div class="why-card">
+          <h4>🤖 AskIAM — per-user identity</h4>
+          <p>Runs a real auth-code + PKCE flow for each Slack user. Caches tokens in KV. Calls the MCP server under the user's own identity on every request.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ARCHITECTURE -->
+    <div class="section" id="architecture">
+      <div class="section-title">Architecture overview</div>
+      <hr class="section-rule">
+      <div class="diagram"><pre>
 IBM Verify SaaS  (baronia.verify.ibm.com)
   │
   ├── Events API ─────────────────────────► worker-verifybot
@@ -239,17 +283,17 @@ IBM Verify SaaS  (baronia.verify.ibm.com)
                                                  ├── /askiam slash command
                                                  ├── Cloudflare KV  (token:&lt;user_id&gt;)
                                                  └── mcp.baronia.work → IBM Verify APIs
-    </pre></div>
-  </div>
+      </pre></div>
+    </div>
 
-  <!-- QUICK START -->
-  <div class="section" id="quickstart">
-    <div class="section-heading">Quick start</div>
-    <hr class="section-rule">
-    <div class="qs-grid">
-      <div class="qs-card">
-        <h4>🔔 VerifyBot</h4>
-        <pre>cd worker-verifybot
+    <!-- QUICK START -->
+    <div class="section" id="quickstart">
+      <div class="section-title">Quick start</div>
+      <hr class="section-rule">
+      <div class="qs-grid">
+        <div class="qs-card">
+          <h4>🔔 VerifyBot</h4>
+          <pre>cd worker-verifybot
 npm install
 npx wrangler secret put EVENTS_CLIENT_ID
 npx wrangler secret put EVENTS_CLIENT_SECRET
@@ -259,12 +303,12 @@ npx wrangler secret put SLACK_SIGNING_SECRET
 npx wrangler secret put SLACK_ALERT_WEBHOOK_URL
 npx wrangler secret put SEVERITY_THRESHOLD
 npx wrangler deploy</pre>
-      </div>
-      <div class="qs-card">
-        <h4>🤖 AskIAM</h4>
-        <pre>cd worker-askiam
+        </div>
+        <div class="qs-card">
+          <h4>🤖 AskIAM</h4>
+          <pre>cd worker-askiam
 npm install
-# First time only — paste ID into wrangler.toml
+# First time — paste ID into wrangler.toml
 npx wrangler kv namespace create ASKIAM_TOKENS
 
 npx wrangler secret put VERIFY_CLIENT_ID
@@ -275,37 +319,41 @@ npx wrangler secret put WORKER_BASE_URL
 npx wrangler secret put CF_ACCESS_CLIENT_ID
 npx wrangler secret put CF_ACCESS_CLIENT_SECRET
 npx wrangler deploy</pre>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- PREREQUISITES -->
-  <div class="section" id="prerequisites">
-    <div class="section-heading">Prerequisites</div>
-    <hr class="section-rule">
-    <table>
-      <tr><th>Requirement</th><th>Notes</th></tr>
-      <tr><td>Cloudflare account</td><td>Workers + KV free tier is sufficient to start</td></tr>
-      <tr><td>IBM Verify SaaS tenant</td><td>API client for Events (Manage + Read reports) + Subject app for OAuth PKCE</td></tr>
-      <tr><td>Slack workspace</td><td>Permission to create and install Slack apps</td></tr>
-      <tr><td>Google AI Studio API key</td><td>Gemini 3.5 Flash Lite — event classification and report narratives</td></tr>
-      <tr><td>Node.js 18+ and npx</td><td>To run the wrangler CLI for deployment and secret management</td></tr>
-    </table>
-  </div>
+    <!-- PREREQUISITES -->
+    <div class="section" id="prerequisites">
+      <div class="section-title">Prerequisites</div>
+      <hr class="section-rule">
+      <table>
+        <tr><th>Requirement</th><th>Notes</th></tr>
+        <tr><td>Cloudflare account</td><td>Workers + KV — free tier is sufficient to start</td></tr>
+        <tr><td>IBM Verify SaaS tenant</td><td>API client for Events (Manage + Read reports) + Subject app for OAuth PKCE</td></tr>
+        <tr><td>Slack workspace</td><td>Permission to create and install Slack apps</td></tr>
+        <tr><td>Google AI Studio API key</td><td>Gemini 3.5 Flash Lite — event classification and report narratives</td></tr>
+        <tr><td>Node.js 18+ and npx</td><td>To run the wrangler CLI for deployment and secret management</td></tr>
+      </table>
+    </div>
 
-</div><!-- /content -->
+  </main>
+
+  <!-- RIGHT NAV -->
+  <aside class="rightnav">
+    <div class="rightnav-title">On this page</div>
+    <a href="#workers">What's in this repo</a>
+    <a href="#capabilities">Key capabilities</a>
+    <a href="#why-two">Why two Workers</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#quickstart">Quick start</a>
+    <a href="#prerequisites">Prerequisites</a>
+  </aside>
+
+</div>
 
 <footer class="site-footer">
-  <p>
-    <a href="https://github.com/rbaronia/verify-slack-bots">GitHub: rbaronia/verify-slack-bots</a>
-    &nbsp;·&nbsp;
-    <a href="verifybot.html">VerifyBot docs</a>
-    &nbsp;·&nbsp;
-    <a href="askiam.html">AskIAM docs</a>
-    &nbsp;·&nbsp;
-    Made with IBM Bob
-  </p>
+  <p><a href="https://github.com/rbaronia/verify-slack-bots">GitHub: rbaronia/verify-slack-bots</a> &nbsp;·&nbsp; <a href="verifybot.html">VerifyBot</a> &nbsp;·&nbsp; <a href="askiam.html">AskIAM</a> &nbsp;·&nbsp; Made with IBM Bob</p>
 </footer>
-
 </body>
 </html>
