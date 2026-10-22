@@ -1,3 +1,37 @@
+/**
+ * @file shared/gemini.js
+ * @description LLM routing and answer-formatting layer for AskIAM.
+ *
+ * Responsibilities
+ * ────────────────
+ * 1. Tool registry — defines all 34 IBM Verify MCP tools with descriptions
+ *    used in LLM prompts, grouped by persona (admin / end_user).
+ * 2. Input sanitisation — rejects prompt-injection patterns before any LLM
+ *    call; strips nested objects from LLM-returned args (sanitiseArgs).
+ * 3. LLM provider chain — tries Gemini models in order (quota-aware), falls
+ *    back to Groq automatically if all Gemini models fail.
+ * 4. routeQuery() — sends the user's natural-language query to the LLM and
+ *    returns { toolName, args, persona } identifying the best MCP tool to call.
+ * 5. answerQuery() — sends the raw MCP tool result back to the LLM and
+ *    returns a structured { query, summary, bullets[], footer } object for
+ *    Block Kit assembly, with optional server-side pagination.
+ *
+ * Exported symbols
+ * ────────────────
+ * sanitiseQuery(text)                             — input guard (called by index.js before routeQuery)
+ * routeQuery(text, geminiKey, groqKey)            → { toolName, args, persona } | null
+ * answerQuery(question, toolName, mcpResult,
+ *             geminiKey, groqKey, page, pageSize) → { query, summary, bullets, footer }
+ *
+ * KV / secrets used (passed in as arguments, never imported directly)
+ * ────────────────────────────────────────────────────────────────────
+ * GEMINI_API_KEY — Google AI Studio key; 8 s per-model timeout
+ * GROQ_API_KEY   — Groq key; model openai/gpt-oss-120b; 20 s timeout
+ */
+
+// ---------------------------------------------------------------------------
+// LLM provider config
+// ---------------------------------------------------------------------------
 const GEMINI_MODELS = [
   'gemini-3.8-flash',
   'gemini-3.5-flash',
@@ -57,61 +91,200 @@ const USER_TOOLS = [
   { name: 'ibm_verify_review_access_request',      desc: 'Approve or reject an access request (args: request_id, decision, justification)' },
 ];
 
-// Tools available to both personas
+// Tools callable by either persona (routing logic handles persona selection)
 const SHARED_TOOLS = ['ibm_verify_list_user_mfa_enrollments', 'ibm_verify_delete_mfa_enrollment'];
 
-const ALL_TOOLS     = [...ADMIN_TOOLS, ...USER_TOOLS];
+const ALL_TOOLS      = [...ADMIN_TOOLS, ...USER_TOOLS];
 const ALL_TOOL_NAMES = ALL_TOOLS.map(t => t.name);
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Parse JSON from an LLM response that may or may not be wrapped in a
+ * markdown code fence (```json ... ```).
+ * @param {string} text
+ * @returns {*} Parsed JSON value
+ * @throws {SyntaxError} if no valid JSON is found
+ */
 function extractJson(text) {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fenced ? fenced[1] : text;
   return JSON.parse(raw.trim());
 }
 
-async function generateContent(systemInstruction, userText, apiKey) {
+// ---------------------------------------------------------------------------
+// Input sanitisation — prompt injection defence (Security: C2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex covering common prompt-injection trigger phrases.
+ * Tested case-insensitively; reset between calls via the `g` flag.
+ */
+const INJECTION_PATTERN =
+  /ignore\s+(all\s+)?(previous|prior|above)\s+instructions?|forget\s+everything|disregard\s+(all\s+)?instructions?|system\s*:/gi;
+
+/**
+ * Validate and sanitise a raw user query before it is sent to the LLM.
+ * Exported so index.js can call it at the entry point of every request.
+ *
+ * @param {string} text — Raw query text from the Slack slash command
+ * @returns {string}    — Sanitised query, truncated to 500 characters
+ * @throws {Error}      — If the query is empty, not a string, or matches
+ *                        a known prompt-injection pattern
+ */
+export function sanitiseQuery(text) {
+  if (!text || typeof text !== 'string') throw new Error('Invalid query.');
+  if (INJECTION_PATTERN.test(text)) throw new Error('Query contains disallowed content.');
+  return text.slice(0, 500);
+}
+
+/**
+ * Strip any nested objects or arrays from LLM-returned tool arguments.
+ * Only primitive values (string, number, boolean) are passed to the MCP server.
+ * This prevents an injected LLM response from smuggling structured payloads.
+ *
+ * @param {object} args — Raw args object from LLM JSON output
+ * @returns {object}    — Sanitised args containing only primitive values
+ */
+function sanitiseArgs(args) {
+  if (!args || typeof args !== 'object') return {};
+  const safe = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      safe[k] = v;
+    }
+  }
+  return safe;
+}
+
+// ---------------------------------------------------------------------------
+// Gemini — try each model in order, skip on quota / availability errors
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempt to generate content using the Gemini API, cycling through
+ * GEMINI_MODELS until one succeeds or all are exhausted.
+ *
+ * Skips a model silently on HTTP 404 (model not found), 429 (quota), or
+ * 503 (overloaded). Any other non-2xx status throws immediately.
+ *
+ * @param {string} systemInstruction — LLM system prompt
+ * @param {string} userText          — User turn content
+ * @param {string} geminiKey         — Google AI Studio API key
+ * @returns {Promise<string|null>}   — Generated text, or null if all models failed
+ */
+async function tryGemini(systemInstruction, userText, geminiKey) {
   const body = JSON.stringify({
     systemInstruction: { parts: [{ text: systemInstruction }] },
     contents: [{ role: 'user', parts: [{ text: userText }] }],
   });
 
-  const delays = [0, 1000]; // immediate + 1 retry at 1s
-
   for (const model of GEMINI_MODELS) {
-    const url = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
-    for (const delay of delays) {
-      if (delay > 0) await new Promise(r => setTimeout(r, delay));
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(8000),
-          body,
-        });
-      } catch (fetchErr) {
-        // Timeout or network error — try next attempt/model
-        console.warn(`[Gemini] ${model} attempt failed: ${fetchErr.message}`);
-        continue;
-      }
-      if (resp.status === 429 || resp.status === 503) continue; // retry or next model
-      if (!resp.ok) {
-        const errBody = await resp.text().catch(() => '');
-        // 404 = model gone — try next model immediately
-        if (resp.status === 404) break;
-        throw new Error(`Gemini API error: ${resp.status} — ${errBody.slice(0, 200)}`);
-      }
-      const data = await resp.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error(`Gemini returned no text — finish_reason: ${data.candidates?.[0]?.finishReason ?? 'unknown'}`);
-      return text;
+    const url = `${GEMINI_BASE}/${model}:generateContent?key=${geminiKey}`;
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(8000),
+        body,
+      });
+    } catch (err) {
+      console.warn(`[Gemini] ${model} fetch failed: ${err.message}`);
+      continue;
     }
+    if (resp.status === 429 || resp.status === 503 || resp.status === 404) {
+      console.warn(`[Gemini] ${model} returned ${resp.status} — skipping`);
+      continue;
+    }
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => '');
+      throw new Error(`Gemini error ${resp.status}: ${errBody.slice(0, 200)}`);
+    }
+    const data = await resp.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text) return text;
   }
+  return null; // all Gemini models failed
+}
 
-  throw new Error('Gemini unavailable — all models returned 429/503. Please try again in a moment.');
+// ---------------------------------------------------------------------------
+// Groq fallback — OpenAI-compatible chat completions API
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempt to generate content using the Groq API (OpenAI-compatible endpoint).
+ * Used as a fallback when all Gemini models are unavailable or quota-exhausted.
+ *
+ * Returns null (rather than throwing) on network failure or 429 quota errors
+ * so the caller can surface a clean "all providers unavailable" message.
+ *
+ * @param {string} systemInstruction — LLM system prompt
+ * @param {string} userText          — User turn content
+ * @param {string} groqKey           — Groq API key
+ * @returns {Promise<string|null>}   — Generated text, or null on recoverable failure
+ */
+async function tryGroq(systemInstruction, userText, groqKey) {
+  if (!groqKey) return null;
+  let resp;
+  try {
+    resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${groqKey}`,
+      },
+      signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        messages: [
+          { role: 'system', content: systemInstruction },
+          { role: 'user',   content: userText },
+        ],
+        temperature: 0.1,
+      }),
+    });
+  } catch (err) {
+    console.warn(`[Groq] fetch failed: ${err.message}`);
+    return null;
+  }
+  if (!resp.ok) {
+    const errBody = await resp.text().catch(() => '');
+    console.warn(`[Groq] error ${resp.status}: ${errBody.slice(0, 300)}`);
+    // 429 = quota, return null to surface final error; others throw for visibility
+    if (resp.status === 429) return null;
+    throw new Error(`Groq error ${resp.status}: ${errBody.slice(0, 200)}`);
+  }
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// generateContent — provider chain: Gemini → Groq
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate LLM content, trying Gemini models first and falling back to Groq.
+ * Throws only when every provider has been exhausted.
+ *
+ * @param {string} systemInstruction
+ * @param {string} userText
+ * @param {string} geminiKey
+ * @param {string} groqKey
+ * @returns {Promise<string>} — Generated text
+ * @throws {Error}            — If all providers fail
+ */
+async function generateContent(systemInstruction, userText, geminiKey, groqKey) {
+  const text = await tryGemini(systemInstruction, userText, geminiKey);
+  if (text) return text;
+
+  console.warn('[LLM] All Gemini models unavailable — falling back to Groq');
+  const groqText = await tryGroq(systemInstruction, userText, groqKey);
+  if (groqText) return groqText;
+
+  throw new Error('All LLM providers unavailable (Gemini quota exhausted, Groq unreachable). Please try again in a moment.');
 }
 
 function buildToolList(tools) {
@@ -119,10 +292,26 @@ function buildToolList(tools) {
 }
 
 // ---------------------------------------------------------------------------
-// routeQuery — pick the best tool and extract args
-// Returns { toolName, args, persona } or null
+// routeQuery — map a natural-language query to an MCP tool call
 // ---------------------------------------------------------------------------
-export async function routeQuery(text, apiKey) {
+
+/**
+ * Send the user's query to the LLM and determine which IBM Verify MCP tool
+ * to call, which arguments to pass, and which persona (admin / end_user) to
+ * use for the MCP request.
+ *
+ * The LLM output is validated against ALL_TOOL_NAMES and args are sanitised
+ * with sanitiseArgs() before being returned — the caller should not assume
+ * the LLM output is safe to use directly.
+ *
+ * @param {string} text     — Sanitised user query (output of sanitiseQuery)
+ * @param {string} apiKey   — Gemini API key
+ * @param {string} groqKey  — Groq API key (fallback)
+ * @returns {Promise<{toolName: string, args: object, persona: string}|null>}
+ *   — Routing result, or null if no suitable tool was found
+ * @throws {Error} — If all LLM providers fail
+ */
+export async function routeQuery(text, apiKey, groqKey) {
   const systemInstruction =
     'You are an IBM Verify IAM assistant. Route the user query to the best tool.\n\n' +
     'ADMIN tools (persona=admin):\n' +
@@ -138,23 +327,46 @@ export async function routeQuery(text, apiKey) {
     '6. Do not include markdown or explanation — JSON only.';
 
   try {
-    const responseText = await generateContent(systemInstruction, text, apiKey);
-    const parsed = extractJson(responseText);
+    const responseText = await generateContent(systemInstruction, text, apiKey, groqKey);
+    let parsed;
+    try {
+      parsed = extractJson(responseText);
+    } catch {
+      console.warn('[routeQuery] JSON parse failed, response:', responseText?.slice(0, 200));
+      return null;
+    }
     if (!parsed.toolName || !ALL_TOOL_NAMES.includes(parsed.toolName)) return null;
     const persona = parsed.persona === 'end_user' ? 'end_user' : 'admin';
-    return { toolName: parsed.toolName, args: parsed.args ?? {}, persona };
+    return { toolName: parsed.toolName, args: sanitiseArgs(parsed.args), persona };
   } catch (err) {
     throw new Error(`Routing failed: ${err.message}`);
   }
 }
 
 // ---------------------------------------------------------------------------
-// answerQuery — returns a structured object { query, summary, bullets, footer }
-// that the caller assembles into Block Kit blocks.
-// page     — 0-based page index (default 0 = first 10)
-// pageSize — rows per page (default 10; 0 = show all)
+// answerQuery — format an MCP tool result into a Block Kit-ready structure
 // ---------------------------------------------------------------------------
-export async function answerQuery(question, toolName, mcpResult, apiKey, page = 0, pageSize = 10) {
+
+/**
+ * Send the raw MCP tool result to the LLM and produce a structured summary
+ * suitable for assembly into a Slack Block Kit message.
+ *
+ * The LLM is asked to return a JSON object with the schema:
+ *   { query, summary, bullets[], footer }
+ *
+ * On any LLM or parse failure, falls back gracefully to a plain-text object
+ * so the caller always receives the same shape regardless of provider state.
+ *
+ * @param {string} question   — Original user query (for context in the prompt)
+ * @param {string} toolName   — MCP tool that was called (e.g. 'ibm_verify_list_users')
+ * @param {string} mcpResult  — Raw text content from the MCP tool response
+ * @param {string} apiKey     — Gemini API key
+ * @param {string} groqKey    — Groq API key (fallback)
+ * @param {number} [page=0]   — 0-based page index for pagination
+ * @param {number} [pageSize=10] — Items per page; 0 = include all items
+ * @returns {Promise<{query: string, summary: string, bullets: string[], footer: string}>}
+ */
+export async function answerQuery(question, toolName, mcpResult, apiKey, groqKey, page = 0, pageSize = 10) {
   const systemInstruction =
     'You are an IBM Verify IAM assistant. Return ONLY a JSON object — no markdown fences, no extra text.\n\n' +
     'Schema:\n' +
@@ -195,12 +407,12 @@ export async function answerQuery(question, toolName, mcpResult, apiKey, page = 
     pageNote;
 
   try {
-    const raw = await generateContent(systemInstruction, userText, apiKey);
+    const raw = await generateContent(systemInstruction, userText, apiKey, groqKey);
     // Strip markdown code fences if Gemini wraps the JSON
     const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     return JSON.parse(cleaned);
-  } catch {
-    // Fallback: plain text object so the caller always gets the same shape
+  } catch (err) {
+    console.warn('[answerQuery] LLM parse failed, returning raw result. Error:', err.message);
     return {
       query:   question,
       summary: mcpResult.slice(0, 400),

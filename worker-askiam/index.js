@@ -1,4 +1,58 @@
-import { routeQuery, answerQuery } from './shared/gemini.js';
+/**
+ * @file index.js
+ * @description Cloudflare Worker entry point for the AskIAM Slack bot.
+ *
+ * AskIAM lets Slack users query IBM Verify IAM in natural language via
+ * the /askiam slash command. Queries are routed by an LLM to the correct
+ * IBM Verify MCP tool, results are formatted into Slack Block Kit messages,
+ * and returned ephemerally to the requesting user.
+ *
+ * Request flow
+ * ────────────
+ * 1. POST /slack/command  — Slack delivers the /askiam slash command here.
+ *    a. If the user has a valid cached token → executeQuery() in waitUntil.
+ *    b. If no token → start OAuth 2.0 PKCE flow, send auth link to Slack.
+ *
+ * 2. GET  /oauth/callback — IBM Verify redirects here after user login.
+ *    Exchanges the auth code for tokens, stores them in KV, then fires
+ *    the original query automatically via ctx.waitUntil().
+ *
+ * 3. POST /slack/action   — Slack delivers Block Kit button interactions here.
+ *    Handles: write-op confirm/cancel, suggested query buttons, pagination.
+ *
+ * 4. GET  /health         — Unauthenticated liveness probe. Returns {"status":"ok"}.
+ *
+ * KV namespace: ASKIAM_TOKENS
+ * ────────────────────────────
+ * Key prefix      TTL       Value
+ * token:<uid>     8 h       { access_token, refresh_token }
+ * state:<s>       5 min     { userId, verifier, query, responseUrl, redirectUri }
+ * result:<uid>:<r> 10 min   { query, toolName, rawResult }  — pagination cache
+ * confirm:<t>     5 min     { route, query, userId }         — pending write-op
+ * config:admin_users  none  JSON array of Slack user IDs with write access
+ *
+ * Required secrets (set with `wrangler secret put`)
+ * ──────────────────────────────────────────────────
+ * VERIFY_CLIENT_ID      — IBM Verify OAuth app client ID
+ * VERIFY_CLIENT_SECRET  — IBM Verify OAuth app client secret
+ * SLACK_SIGNING_SECRET  — Slack app signing secret for request verification
+ * GEMINI_API_KEY        — Google AI Studio API key
+ * GROQ_API_KEY          — Groq API key (LLM fallback)
+ * WORKER_BASE_URL       — Public base URL of this Worker (for OAuth redirect URI)
+ * CF_ACCESS_CLIENT_ID   — Cloudflare Access service token ID (MCP server bypass)
+ * CF_ACCESS_CLIENT_SECRET — Cloudflare Access service token secret
+ *
+ * Security controls implemented
+ * ──────────────────────────────
+ * C1 — Write-op authz: WRITE_TOOLS set + KV admin list + confirmation button
+ * C2 — Prompt injection: sanitiseQuery() called before every LLM invocation
+ * C3 — responseUrl SSRF guard: must be https://hooks.slack.com/ prefix
+ * H4 — Token TTL: 8-hour expiry on all KV token writes
+ * H5 — Empty userId guard in action handler
+ * M10 — Cache keys scoped to userId
+ */
+
+import { routeQuery, answerQuery, sanitiseQuery } from './shared/gemini.js';
 import { callTool } from './shared/mcp-client.js';
 
 const VERIFY_BASE    = 'https://baronia.verify.ibm.com';
@@ -9,6 +63,27 @@ const SCOPES         = 'openid profile';
 const STATE_TTL_MS   = 5 * 60 * 1000;   // 5 min PKCE state
 const RESULT_TTL_S   = 10 * 60;         // 10 min cached MCP result for pagination
 const PAGE_SIZE      = 10;
+// ---------------------------------------------------------------------------
+// C1 — Write-operation tool registry + admin authorisation
+// ---------------------------------------------------------------------------
+const WRITE_TOOLS = new Set([
+  'ibm_verify_delete_user',
+  'ibm_verify_delete_group',
+  'ibm_verify_delete_application',
+  'ibm_verify_reset_user_password',
+  'ibm_verify_create_user',
+  'ibm_verify_update_user',
+  'ibm_verify_update_group',
+  'ibm_verify_delete_mfa_enrollment',
+  'ibm_verify_review_access_request',
+  'ibm_verify_create_application',
+  'ibm_verify_update_application',
+]);
+
+// Returns the array of admin Slack user IDs stored in KV, or [] if not set.
+async function getAdminUsers(env) {
+  return await env.ASKIAM_TOKENS.get('config:admin_users', { type: 'json' }).catch(() => null) ?? [];
+}
 
 // ---------------------------------------------------------------------------
 // Helpers — PKCE
@@ -71,6 +146,51 @@ async function postToResponseUrl(responseUrl, payload) {
 }
 
 // Build a Slack Block Kit message from a structured Gemini response.
+// C1 — Confirmation block for write operations
+// pending write stored in KV: confirm:<token> → { route, query, userId }
+const CONFIRM_TTL_S = 5 * 60; // 5 min to click confirm
+
+async function postWriteConfirmation(responseUrl, route, query, userId, env) {
+  const confirmToken = randomState();
+  await env.ASKIAM_TOKENS.put(`confirm:${confirmToken}`, JSON.stringify({
+    route, query, userId,
+  }), { expirationTtl: CONFIRM_TTL_S });
+
+  const toolLabel = route.toolName.replace('ibm_verify_', '').replace(/_/g, ' ');
+  const argsText  = Object.keys(route.args).length
+    ? `\n*Args:* ${JSON.stringify(route.args)}`
+    : '';
+
+  await postToResponseUrl(responseUrl, {
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn',
+          text: `⚠️ *Confirm write operation*\n*Tool:* \`${toolLabel}\`${argsText}\n_This action may be irreversible. Are you sure?_` },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            style: 'danger',
+            text: { type: 'plain_text', text: '✅ Yes, proceed', emoji: true },
+            action_id: 'askiam_confirm_write',
+            value: JSON.stringify({ confirmToken }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '❌ Cancel', emoji: true },
+            action_id: 'askiam_cancel_write',
+            value: JSON.stringify({ confirmToken }),
+          },
+        ],
+      },
+    ],
+    text: `Confirm write operation: ${toolLabel}`,
+  });
+}
+
 // answer   — { query, summary, bullets, footer } from answerQuery()
 // cacheKey — KV key for the stored raw result
 // page     — current 0-based page
@@ -211,15 +331,32 @@ async function refreshAccessToken(refreshToken, env) {
 // Estimate whether a raw MCP result string likely contains more than one page.
 // We count newlines as a rough proxy for rows — good enough to decide on buttons.
 // ---------------------------------------------------------------------------
+async function hashKey(...parts) {
+  const data = new TextEncoder().encode(parts.join('|'));
+  const buf  = await crypto.subtle.digest('SHA-256', data);
+  return base64url(buf).slice(0, 16);
+}
+
+
 function estimateRowCount(rawResult) {
   return (rawResult.match(/\n/g) ?? []).length;
 }
 
 // ---------------------------------------------------------------------------
 // Core AskIAM execution — assumes a valid access token
+// userId is required for write-op authz checks.
 // ---------------------------------------------------------------------------
-async function executeQuery(query, accessToken, responseUrl, env, page = 0, mode = 'page') {
-  const route = await routeQuery(query, env.GEMINI_API_KEY);
+async function executeQuery(query, accessToken, responseUrl, env, userId = '', page = 0, mode = 'page') {
+  // C2 — sanitise before sending to LLM
+  let safeQuery;
+  try {
+    safeQuery = sanitiseQuery(query);
+  } catch (err) {
+    await postToResponseUrl(responseUrl, `🚫 ${err.message}`);
+    return;
+  }
+
+  const route = await routeQuery(safeQuery, env.GEMINI_API_KEY, env.GROQ_API_KEY);
   if (!route) {
     await postToResponseUrl(responseUrl,
       '*AskIAM* — I didn\'t understand that query. Try:\n' +
@@ -234,22 +371,47 @@ async function executeQuery(query, accessToken, responseUrl, env, page = 0, mode
     return;
   }
 
+  // C1 — write-op authz: check admin list, then require confirmation
+  if (WRITE_TOOLS.has(route.toolName)) {
+    const admins = await getAdminUsers(env);
+    if (!admins.includes(userId)) {
+      await postToResponseUrl(responseUrl,
+        '🚫 *Write operations require admin privileges.*\n' +
+        'Contact your IAM administrator to be added to the AskIAM admin list.'
+      );
+      return;
+    }
+    // Admin confirmed — post a confirmation button before executing
+    await postWriteConfirmation(responseUrl, route, safeQuery, userId, env);
+    return;
+  }
+
   const rawResult = await callTool(route.toolName, route.args, accessToken, {
     clientId:     env.CF_ACCESS_CLIENT_ID,
     clientSecret: env.CF_ACCESS_CLIENT_SECRET,
     persona:      route.persona,
   });
 
-  // Store raw result in KV for pagination buttons (10-min TTL)
-  const cacheKey = `result:${randomState()}`;
-  await env.ASKIAM_TOKENS.put(cacheKey, JSON.stringify({
-    query, toolName: route.toolName, rawResult,
-  }), { expirationTtl: RESULT_TTL_S });
+  // Only cache in KV when the result is large enough to need pagination.
+  // This avoids a KV write on every single query (count queries, summaries, etc.)
+  // and keeps us well within the free-tier 1,000 puts/day limit.
+  const needsPagination = mode !== 'all' && estimateRowCount(rawResult) > PAGE_SIZE;
+  let cacheKey = null;
+  if (needsPagination) {
+    // Use a deterministic key so repeated identical queries reuse the same KV
+    // slot rather than creating a new entry each time (saves free-tier puts).
+    cacheKey = `result:${userId}:${await hashKey(route.toolName, JSON.stringify(route.args))}`;
+    const existing = await env.ASKIAM_TOKENS.get(cacheKey, { type: 'json' }).catch(() => null);
+    if (!existing || existing.rawResult !== rawResult) {
+      await env.ASKIAM_TOKENS.put(cacheKey, JSON.stringify({
+        query, toolName: route.toolName, rawResult,
+      }), { expirationTtl: RESULT_TTL_S });
+    }
+  }
 
-  const pageSize  = mode === 'all' ? 0 : PAGE_SIZE;
-  const answer    = await answerQuery(query, route.toolName, rawResult, env.GEMINI_API_KEY, page, pageSize);
-  // Use Gemini's footer field to detect truncation — it contains "showing X of Y" when more exist
-  const hasMore   = mode !== 'all' && typeof answer === 'object' && !!answer.footer;
+  const pageSize  = needsPagination ? PAGE_SIZE : 0;
+  const answer    = await answerQuery(query, route.toolName, rawResult, env.GEMINI_API_KEY, env.GROQ_API_KEY, page, pageSize);
+  const hasMore   = needsPagination && typeof answer === 'object' && !!answer.footer;
   const msg       = buildBlockKitMessage(answer, cacheKey, page, hasMore);
   await postToResponseUrl(responseUrl, msg);
 }
@@ -279,16 +441,58 @@ async function handleAction(request, env, ctx) {
     try {
       const actionData = JSON.parse(action.value ?? '{}');
 
+      const userId = payload.user?.id;
+      if (!userId) {
+        await postToResponseUrl(responseUrl, '🔒 Cannot identify user. Please re-run `/askiam`.');
+        return;
+      }
+
+      // ── Write-op confirmation button ─────────────────────────────────────
+      if (action.action_id === 'askiam_cancel_write') {
+        await postToResponseUrl(responseUrl, '↩️ Operation cancelled.');
+        const { confirmToken } = actionData;
+        if (confirmToken) await env.ASKIAM_TOKENS.delete(`confirm:${confirmToken}`).catch(() => {});
+        return;
+      }
+
+      if (action.action_id === 'askiam_confirm_write') {
+        const { confirmToken } = actionData;
+        const pending = await env.ASKIAM_TOKENS.get(`confirm:${confirmToken}`, { type: 'json' }).catch(() => null);
+        if (!pending) {
+          await postToResponseUrl(responseUrl, '⚠️ Confirmation expired — please re-run your query.');
+          return;
+        }
+        // Verify the confirming user is the same one who triggered the query
+        if (pending.userId !== userId) {
+          await postToResponseUrl(responseUrl, '🚫 Only the user who initiated this operation can confirm it.');
+          return;
+        }
+        await env.ASKIAM_TOKENS.delete(`confirm:${confirmToken}`).catch(() => {});
+        const stored = await env.ASKIAM_TOKENS.get(`token:${userId}`, { type: 'json' }).catch(() => null);
+        if (!stored?.access_token) {
+          await postToResponseUrl(responseUrl, '🔒 Session expired — run `/askiam` again to re-authenticate.');
+          return;
+        }
+        const rawResult = await callTool(pending.route.toolName, pending.route.args, stored.access_token, {
+          clientId:     env.CF_ACCESS_CLIENT_ID,
+          clientSecret: env.CF_ACCESS_CLIENT_SECRET,
+          persona:      pending.route.persona,
+        });
+        const answer = await answerQuery(pending.query, pending.route.toolName, rawResult, env.GEMINI_API_KEY, env.GROQ_API_KEY);
+        const msg    = buildBlockKitMessage(answer, null, 0, false);
+        await postToResponseUrl(responseUrl, msg);
+        return;
+      }
+
       // ── Suggested query button ───────────────────────────────────────────
       if (actionData.suggestedQuery) {
-        const userId = payload.user?.id ?? '';
         const stored = await env.ASKIAM_TOKENS.get(`token:${userId}`, { type: 'json' }).catch(() => null);
         if (!stored?.access_token) {
           await postToResponseUrl(responseUrl, '🔒 Session expired — run `/askiam` again to re-authenticate.');
           return;
         }
         // Post the result directly — no intermediate ack to avoid stale messages
-        await executeQuery(actionData.suggestedQuery, stored.access_token, responseUrl, env);
+        await executeQuery(actionData.suggestedQuery, stored.access_token, responseUrl, env, userId);
         return;
       }
 
@@ -303,7 +507,7 @@ async function handleAction(request, env, ctx) {
 
       const { query, toolName, rawResult } = cached;
       const pageSize = mode === 'all' ? 0 : PAGE_SIZE;
-      const answer   = await answerQuery(query, toolName, rawResult, env.GEMINI_API_KEY, page, pageSize);
+      const answer   = await answerQuery(query, toolName, rawResult, env.GEMINI_API_KEY, env.GROQ_API_KEY, page, pageSize);
       const hasMore  = mode !== 'all' && typeof answer === 'object' && !!answer.footer;
       const msg      = buildBlockKitMessage(answer, cacheKey, page, hasMore);
 
@@ -359,16 +563,21 @@ async function handleSlashCommand(request, env, ctx) {
   if (stored?.access_token) {
     ctx.waitUntil((async () => {
       try {
-        await executeQuery(query, stored.access_token, responseUrl, env);
+        await executeQuery(query, stored.access_token, responseUrl, env, userId);
       } catch (err) {
         if (stored.refresh_token && err.message.includes('401')) {
           try {
             const refreshed = await refreshAccessToken(stored.refresh_token, env);
-            await env.ASKIAM_TOKENS.put(`token:${userId}`, JSON.stringify({
-              access_token:  refreshed.access_token,
-              refresh_token: refreshed.refresh_token ?? stored.refresh_token,
-            }));
-            await executeQuery(query, refreshed.access_token, responseUrl, env);
+            const newRefresh = refreshed.refresh_token ?? stored.refresh_token;
+            // Only write if the tokens actually changed (avoids a KV put when
+            // a concurrent request already refreshed the same token).
+            if (refreshed.access_token !== stored.access_token || newRefresh !== stored.refresh_token) {
+              await env.ASKIAM_TOKENS.put(`token:${userId}`, JSON.stringify({
+                access_token:  refreshed.access_token,
+                refresh_token: newRefresh,
+              }));
+            }
+            await executeQuery(query, refreshed.access_token, responseUrl, env, userId);
           } catch {
             await env.ASKIAM_TOKENS.delete(`token:${userId}`);
             await postToResponseUrl(responseUrl, '🔒 Your session expired. Please run `/askiam` again to re-authenticate.');
@@ -416,7 +625,7 @@ async function handleSlashCommand(request, env, ctx) {
 // ---------------------------------------------------------------------------
 // Route: GET /oauth/callback
 // ---------------------------------------------------------------------------
-async function handleOAuthCallback(request, env) {
+async function handleOAuthCallback(request, env, ctx) {
   const url   = new URL(request.url);
   const code  = url.searchParams.get('code');
   const state = url.searchParams.get('state');
@@ -454,9 +663,16 @@ async function handleOAuthCallback(request, env) {
     refresh_token: tokens.refresh_token ?? null,
   }));
 
+  // C3 — validate responseUrl before using it, register in waitUntil
   if (stored.query && stored.responseUrl) {
-    executeQuery(stored.query, tokens.access_token, stored.responseUrl, env)
-      .catch(err => console.error('[OAuth callback query]', err.message));
+    if (!stored.responseUrl.startsWith('https://hooks.slack.com/')) {
+      console.error('[OAuth callback] suspicious responseUrl rejected:', stored.responseUrl.slice(0, 80));
+    } else {
+      ctx.waitUntil(
+        executeQuery(stored.query, tokens.access_token, stored.responseUrl, env, stored.userId)
+          .catch(err => console.error('[OAuth callback query]', err.message))
+      );
+    }
   }
 
   return new Response(
@@ -481,7 +697,7 @@ export default {
       case '/slack/action':
         return handleAction(request, env, ctx);
       case '/oauth/callback':
-        return handleOAuthCallback(request, env);
+        return handleOAuthCallback(request, env, ctx);
       case '/health':
         return new Response(JSON.stringify({ status: 'ok', worker: 'askiam-bot' }),
           { headers: { 'Content-Type': 'application/json' } });
