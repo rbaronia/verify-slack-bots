@@ -30,7 +30,18 @@ async function verifySlackSignature(rawBody, signingSecret, request) {
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
   const expected = `v0=${hex}`;
-  return expected === signature;
+  // Constant-time comparison prevents timing-based secret extraction
+  return timingSafeEqual(expected, signature);
+}
+
+// Constant-time string comparison — prevents timing oracle on HMAC secrets.
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const aBytes = new TextEncoder().encode(a);
+  const bBytes = new TextEncoder().encode(b);
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
+  return diff === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,14 +262,22 @@ async function handleScheduled(env) {
   // Save new poll time BEFORE processing so a crash doesn't re-process events
   await env.VERIFY_BOT_STATE.put(KV_KEY, new Date().toISOString());
 
-  const threshold = parseInt(env.SEVERITY_THRESHOLD ?? '6', 10);
+  const threshold  = parseInt(env.SEVERITY_THRESHOLD ?? '6', 10);
+  // Cap alerts per cron run to prevent runaway Gemini quota use during burst events.
+  const ALERT_CAP  = parseInt(env.ALERT_CAP ?? '10', 10);
+  let alertsFired  = 0;
 
   for (const event of events) {
     try {
       const c = await classifyEvent(event, env.GEMINI_API_KEY);
       if (c.severity >= threshold) {
+        if (alertsFired >= ALERT_CAP) {
+          console.warn('[POLL CAP] alert cap reached, skipping remaining events');
+          break;
+        }
         const blocks = buildAlertBlock(event, c);
         await postToWebhook(env.SLACK_ALERT_WEBHOOK_URL, blocks, c.summary);
+        alertsFired++;
         console.log('[POLL ALERT]', event.data?.action, 'severity=' + c.severity);
       } else {
         console.log('[POLL SKIP]', event.data?.action, 'severity=' + c.severity);
@@ -481,7 +500,8 @@ export default {
       // Manual trigger for summaries — ?days=1|7|30|90 (default 1)
       // Protected by X-Trigger-Secret header (value = SLACK_SIGNING_SECRET)
       case '/trigger-summary': {
-        if (request.headers.get('X-Trigger-Secret') !== env.SLACK_SIGNING_SECRET) {
+        // Constant-time compare — prevents timing oracle on the secret value
+        if (!timingSafeEqual(request.headers.get('X-Trigger-Secret') ?? '', env.SLACK_SIGNING_SECRET ?? '')) {
           return new Response('Unauthorized', { status: 401 });
         }
         const daysParam = parseInt(new URL(request.url).searchParams.get('days') ?? '1', 10);

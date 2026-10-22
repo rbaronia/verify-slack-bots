@@ -108,6 +108,16 @@ function randomState() {
 // ---------------------------------------------------------------------------
 // Helpers — Slack signature verification (HMAC-SHA256)
 // ---------------------------------------------------------------------------
+// Constant-time string comparison — prevents timing oracle on HMAC secrets.
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const aBytes = new TextEncoder().encode(a);
+  const bBytes = new TextEncoder().encode(b);
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
+  return diff === 0;
+}
+
 async function verifySlackSignature(rawBody, signingSecret, request) {
   const timestamp = request.headers.get('X-Slack-Request-Timestamp');
   const signature = request.headers.get('X-Slack-Signature');
@@ -124,7 +134,9 @@ async function verifySlackSignature(rawBody, signingSecret, request) {
   );
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(sigBase));
   const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-  return `v0=${hex}` === signature;
+  const expected = `v0=${hex}`;
+  // Constant-time comparison prevents timing-based secret extraction
+  return timingSafeEqual(expected, signature);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +510,12 @@ async function handleAction(request, env, ctx) {
 
       // ── Pagination button ────────────────────────────────────────────────
       const { cacheKey, page, mode } = actionData;
+      // Guard: only allow keys matching the expected result:<userId>:<hash> pattern
+      // to prevent arbitrary KV reads from a manipulated button payload.
+      if (!cacheKey || !/^result:[A-Z0-9]+:[0-9a-f]{16,}$/i.test(cacheKey)) {
+        await postToResponseUrl(responseUrl, '⚠️ Invalid pagination token.');
+        return;
+      }
       const cached = await env.ASKIAM_TOKENS.get(cacheKey, { type: 'json' }).catch(() => null);
 
       if (!cached) {
@@ -563,6 +581,12 @@ async function handleSlashCommand(request, env, ctx) {
   if (stored?.access_token) {
     ctx.waitUntil((async () => {
       try {
+        // Validate responseUrl before using it — guard against SSRF from a
+        // manipulated stored token entry.
+        if (!responseUrl.startsWith('https://hooks.slack.com/')) {
+          console.error('[AskIAM] suspicious responseUrl rejected:', responseUrl.slice(0, 80));
+          return;
+        }
         await executeQuery(query, stored.access_token, responseUrl, env, userId);
       } catch (err) {
         if (stored.refresh_token && err.message.includes('401')) {
@@ -572,10 +596,12 @@ async function handleSlashCommand(request, env, ctx) {
             // Only write if the tokens actually changed (avoids a KV put when
             // a concurrent request already refreshed the same token).
             if (refreshed.access_token !== stored.access_token || newRefresh !== stored.refresh_token) {
+              // TOKEN_TTL_S: IBM Verify tokens live ~8 h; store with matching TTL
+              const TOKEN_TTL_S = 8 * 60 * 60;
               await env.ASKIAM_TOKENS.put(`token:${userId}`, JSON.stringify({
                 access_token:  refreshed.access_token,
                 refresh_token: newRefresh,
-              }));
+              }), { expirationTtl: TOKEN_TTL_S });
             }
             await executeQuery(query, refreshed.access_token, responseUrl, env, userId);
           } catch {
@@ -658,10 +684,13 @@ async function handleOAuthCallback(request, env, ctx) {
       { status: 500, headers: { 'Content-Type': 'text/html' } });
   }
 
+  // TOKEN_TTL_S: IBM Verify tokens live ~8 h; bound KV entry to same window
+  // so stale tokens are automatically evicted rather than persisting forever.
+  const TOKEN_TTL_S = 8 * 60 * 60;
   await env.ASKIAM_TOKENS.put(`token:${stored.userId}`, JSON.stringify({
     access_token:  tokens.access_token,
     refresh_token: tokens.refresh_token ?? null,
-  }));
+  }), { expirationTtl: TOKEN_TTL_S });
 
   // C3 — validate responseUrl before using it, register in waitUntil
   if (stored.query && stored.responseUrl) {
