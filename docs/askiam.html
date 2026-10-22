@@ -229,12 +229,12 @@ POST /slack/command  (Worker)
         <div class="lifecycle-card">
           <div class="lifecycle-card-step">Step 3</div>
           <h4>Tokens stored in KV</h4>
-          <p>Worker exchanges the code for <code>access_token</code> + <code>refresh_token</code>. Stored in KV under <code>token:&lt;slack_user_id&gt;</code>. Original query fires automatically.</p>
+          <p>Worker exchanges the code for <code>access_token</code> + <code>refresh_token</code>. Stored in KV under <code>token:&lt;slack_user_id&gt;</code> with an 8-hour TTL matching IBM Verify's token lifetime — stale tokens auto-evict rather than persist forever. Original query fires automatically.</p>
         </div>
         <div class="lifecycle-card">
           <div class="lifecycle-card-step">Subsequent queries</div>
           <h4>Instant execution</h4>
-          <p>Token read from KV → query runs immediately. On 401, auto-refresh using the refresh token. New tokens only written to KV if they actually changed.</p>
+          <p>Token read from KV → query runs immediately. On 401, auto-refresh using the refresh token. New tokens only written to KV if they actually changed. Refreshed tokens also stored with an 8-hour TTL.</p>
         </div>
       </div>
     </div>
@@ -243,7 +243,7 @@ POST /slack/command  (Worker)
     <div class="section" id="kv-optimisation">
       <div class="section-title">KV write optimisation</div>
       <hr class="section-rule">
-      <p>Cloudflare's free tier allows 1,000 KV <code>put</code> operations per day. Three strategies keep the worker well within this limit:</p>
+      <p>Cloudflare's free tier allows 1,000 KV <code>put</code> operations per day. Four strategies keep the worker well within this limit:</p>
       <table>
         <tr><th>Strategy</th><th>Detail</th></tr>
         <tr>
@@ -257,6 +257,10 @@ POST /slack/command  (Worker)
         <tr>
           <td><strong>Conditional token refresh</strong></td>
           <td>The refreshed token is only written back to KV if <code>access_token</code> or <code>refresh_token</code> actually changed — prevents duplicate writes from concurrent 401-refresh races.</td>
+        </tr>
+        <tr>
+          <td><strong>Token TTL auto-eviction</strong></td>
+          <td>All <code>token:&lt;userId&gt;</code> entries are stored with <code>expirationTtl: 28800</code> (8 hours). IBM Verify tokens expire at the same interval, so stale KV entries are automatically pruned rather than accumulating indefinitely. This eliminates a class of phantom re-auth loops and reduces occupied namespace slots over time.</td>
         </tr>
       </table>
       <div class="callout callout-warn">
@@ -465,7 +469,8 @@ npx wrangler secret put CF_ACCESS_CLIENT_SECRET</pre></div>
         <tr><td><code>redirect_uri_mismatch</code></td><td>Redirect URI not registered in IBM Verify</td><td>Add <code>https://askiam-bot.baronia.workers.dev/oauth/callback</code> to the Subject app</td></tr>
         <tr><td>Authentication session expired on callback</td><td>PKCE state TTL is 5 min</td><td>Run <code>/askiam</code> again and click the link promptly</td></tr>
         <tr><td>401 Unauthorized from MCP server</td><td>User not entitled to the Subject app</td><td>Admin Console → MCP Server Subject → Entitlements → add user</td></tr>
-        <tr><td>KV 429 — too many puts</td><td>Exceeded 1,000 puts/day on free tier</td><td>Deploy latest code — deterministic cache keys + conditional token writes reduce puts significantly</td></tr>
+        <tr><td>KV 429 — too many puts</td><td>Exceeded 1,000 puts/day on free tier</td><td>Deploy latest code — deterministic cache keys, read-before-write, conditional token refresh writes, and 8-hour token TTL auto-eviction all reduce put counts. Heavy burst usage may require upgrading to the Cloudflare Workers Paid plan.</td></tr>
+        <tr><td>Pagination "Invalid pagination token"</td><td>Manipulated or expired <code>cacheKey</code> in button payload</td><td>Re-run your <code>/askiam</code> query to get a fresh result set</td></tr>
         <tr><td>Gemini routing fails silently</td><td>Bad or missing API key</td><td>Check <code>GEMINI_API_KEY</code>; try <code>/askiam count all users</code></td></tr>
       </table>
     </div>

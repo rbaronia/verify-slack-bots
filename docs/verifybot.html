@@ -194,13 +194,13 @@ Cloudflare Cron Triggers
       <hr class="section-rule">
 
       <h3>Real-time alerts</h3>
-      <p>Every minute the Cloudflare cron trigger fires <code>handleScheduled()</code>. It reads <code>lastPolledTime</code> from KV, calls the IBM Verify Events API for events since that timestamp, then updates <code>lastPolledTime</code>. Each event is forwarded to Gemini 3.5 Flash Lite for classification — Gemini assigns a severity score (0–10) and a human-readable summary. Events at or above <code>SEVERITY_THRESHOLD</code> (default 6) are posted to Slack as Block Kit messages with the severity score, category, and Gemini summary prominently shown. Deterministic severity floors are applied after Gemini.</p>
+      <p>Every minute the Cloudflare cron trigger fires <code>handleScheduled()</code>. It reads <code>lastPolledTime</code> from KV, calls the IBM Verify Events API for events since that timestamp, then updates <code>lastPolledTime</code>. Each event is forwarded to Gemini 3.5 Flash Lite for classification — Gemini assigns a severity score (0–10) and a human-readable summary. Events at or above <code>SEVERITY_THRESHOLD</code> (default 6) are posted to Slack as Block Kit messages with the severity score, category, and Gemini summary prominently shown. Deterministic severity floors are applied after Gemini. A per-run alert cap (default 10, configurable via <code>ALERT_CAP</code>) prevents runaway Gemini quota use during burst events.</p>
 
       <h3>Scheduled digest reports</h3>
       <p>Four cron triggers fire at 08:00 SGT to produce narrative digest reports. Each trigger fetches all events for the relevant period, groups them by category with counts, and asks Gemini to write a paragraph summary with key statistics, top event types, and security observations. Reports are posted to the Slack channel with a period header.</p>
 
       <h3>/report slash command</h3>
-      <p>Users run <code>/report</code> in Slack for an on-demand report. With no argument a Block Kit button panel is shown — clicking a period fires the corresponding report into the channel. Slack HMAC-SHA256 signature verification is enforced on every slash command and Block Kit action request.</p>
+      <p>Users run <code>/report</code> in Slack for an on-demand report. With no argument a Block Kit button panel is shown — clicking a period fires the corresponding report into the channel. Slack HMAC-SHA256 signature verification is enforced on every slash command and Block Kit action request using constant-time comparison to prevent timing-based secret extraction.</p>
 
       <div class="callout">
         <span class="callout-icon">ℹ️</span>
@@ -273,6 +273,7 @@ npx wrangler secret put SEVERITY_THRESHOLD     # e.g. 6</pre></div>
         <tr><td><code>SLACK_SIGNING_SECRET</code></td><td>HMAC-SHA256 verification for all Slack slash command and Block Kit action requests</td></tr>
         <tr><td><code>SLACK_ALERT_WEBHOOK_URL</code></td><td>Slack Incoming Webhook URL — posts all alerts and reports to the channel</td></tr>
         <tr><td><code>SEVERITY_THRESHOLD</code></td><td>Minimum severity (0–10) to fire a real-time alert. Default: <code>6</code>. Auth failures hard-floor at 7 regardless.</td></tr>
+        <tr><td><code>ALERT_CAP</code></td><td>Max real-time alerts fired per cron run. Default: <code>10</code>. Prevents runaway Gemini API quota use during burst events. Set higher or lower as needed.</td></tr>
         <tr><td>KV <code>VERIFY_BOT_STATE</code></td><td>Stores <code>lastPolledTime</code> between cron runs. Namespace ID set in <code>wrangler.toml</code>.</td></tr>
       </table>
       <p>For local dev, copy <code>.dev.vars.example</code> to <code>.dev.vars</code> and fill in values. This file is gitignored and never committed.</p>
@@ -339,7 +340,7 @@ curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=90" \
         <tr><th>Symptom</th><th>Fix</th></tr>
         <tr><td>Button shows a warning triangle</td><td>Enable Interactivity in Slack app settings and set the actions request URL (step 6 in Slack setup above)</td></tr>
         <tr><td>Events API returns 403</td><td><code>EVENTS_CLIENT_ID</code> API client is missing <strong>Manage reports</strong> + <strong>Read reports</strong> entitlements in IBM Verify</td></tr>
-        <tr><td>No real-time alerts firing</td><td>Lower <code>SEVERITY_THRESHOLD</code>. Note: auth failures hard-floor at 7 and will always alert if threshold ≤ 7</td></tr>
+        <tr><td>No real-time alerts firing</td><td>Lower <code>SEVERITY_THRESHOLD</code>. Also check whether <code>ALERT_CAP</code> was hit — look for <code>[POLL CAP]</code> in <code>npx wrangler tail</code> output</td></tr>
         <tr><td><code>getToken is not defined</code></td><td>Stale Worker version cached at the Cloudflare edge — re-run <code>npx wrangler deploy</code></td></tr>
         <tr><td>Cron triggers not firing</td><td>Run <code>npx wrangler deploy</code> to re-register crons; verify with <code>npx wrangler triggers list</code></td></tr>
         <tr><td>Slack webhook 400 error</td><td>Block Kit message exceeds Slack limits — run <code>npx wrangler tail</code> to inspect the payload</td></tr>
