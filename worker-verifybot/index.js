@@ -34,30 +34,6 @@ async function verifySlackSignature(rawBody, signingSecret, request) {
 }
 
 // ---------------------------------------------------------------------------
-// Route: POST /verify-webhook
-// ---------------------------------------------------------------------------
-async function handleVerifyWebhook(request, env, ctx) {
-  const body = await request.text();
-
-  if (request.headers.get('X-Verify-Secret') !== env.VERIFY_WEBHOOK_SECRET) {
-    return new Response('Unauthorized', { status: 401 });
-  }
-
-  const event = JSON.parse(body);
-  const c = await classifyEvent(event, env.GEMINI_API_KEY);
-
-  if (c.severity >= parseInt(env.SEVERITY_THRESHOLD ?? '6', 10)) {
-    const blocks = buildAlertBlock(event, c);
-    await postToWebhook(env.SLACK_ALERT_WEBHOOK_URL, blocks, c.summary);
-    console.log('[ALERT]', event.event_type, event.data?.action, 'severity=' + c.severity);
-  } else {
-    console.log('[SKIP]', 'severity=' + c.severity, event.data?.action);
-  }
-
-  return new Response('OK', { status: 200 });
-}
-
-// ---------------------------------------------------------------------------
 // Route: POST /slack/command  (/report only — /askiam moved to askiam-bot)
 // ---------------------------------------------------------------------------
 async function handleSlashCommand(request, env, ctx) {
@@ -491,8 +467,6 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     switch (url.pathname) {
-      case '/verify-webhook':
-        return handleVerifyWebhook(request, env, ctx);
       case '/slack/command':
         return handleSlashCommand(request, env, ctx);
       case '/slack/actions':
@@ -504,9 +478,9 @@ export default {
           headers: { 'Content-Type': 'application/json' },
         });
       // Manual trigger for summaries — ?days=1|7|30|90 (default 1)
-      // Protected by VERIFY_WEBHOOK_SECRET header
+      // Protected by X-Trigger-Secret header (value = SLACK_SIGNING_SECRET)
       case '/trigger-summary': {
-        if (request.headers.get('X-Verify-Secret') !== env.VERIFY_WEBHOOK_SECRET) {
+        if (request.headers.get('X-Trigger-Secret') !== env.SLACK_SIGNING_SECRET) {
           return new Response('Unauthorized', { status: 401 });
         }
         const daysParam = parseInt(new URL(request.url).searchParams.get('days') ?? '1', 10);

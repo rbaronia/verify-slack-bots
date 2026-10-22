@@ -7,11 +7,6 @@
 EVENTS_CLIENT_ID=your-events-client-id-here
 EVENTS_CLIENT_SECRET=your-events-client-secret-here
 
-# Shared secret to authenticate IBM Verify Notification Webhook POSTs.
-# Generate with: openssl rand -hex 32
-# Configure at: baronia.verify.ibm.com → Security → Notification webhooks → Authentication
-VERIFY_WEBHOOK_SECRET=generate-with-openssl-rand-hex-32
-
 # Google Gemini API key — event classification and report narratives
 # Model: gemini-3.5-flash-lite
 # Get at: https://aistudio.google.com/apikey

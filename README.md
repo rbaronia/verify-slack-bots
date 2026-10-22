@@ -14,7 +14,7 @@ Two Cloudflare Workers that connect **IBM Verify SaaS** to Slack.
 The IBM Verify MCP server (`mcp.baronia.work`) only accepts **user** Bearer tokens obtained
 through an OAuth Authorization Code flow — it rejects headless `client_credentials` tokens.
 
-- **VerifyBot** runs fully headless (cron + webhooks) using `client_credentials` for the
+- **VerifyBot** runs fully headless (cron poll every minute) using `client_credentials` for the
   Events API — it can never call the MCP server.
 - **AskIAM** does a real auth-code + PKCE flow per Slack user, caches tokens in KV, and
   calls the MCP server on their behalf.
@@ -43,10 +43,10 @@ See each folder's `README.md` for the full secret setup and Slack app configurat
 IBM Verify SaaS (baronia.verify.ibm.com)
   │
   ├── Events API ──────────────────────────► worker-verifybot
-  │     (cron poll + push webhook)               │
+  │     (cron poll every minute)                 │
   │                                              ├── Gemini classify
   │                                              ├── Slack alerts (#ibm-verify-alerts)
-  │                                              └── /report digests (7/30/90 day)
+  │                                              └── /report digests (1/7/30/90 day)
   │
   └── OAuth / MCP ──────────────────────────► worker-askiam
         (auth-code + PKCE per Slack user)         │

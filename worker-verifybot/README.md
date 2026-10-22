@@ -1,7 +1,8 @@
 # worker-verifybot — IBM Verify Events Bot
 
-A Cloudflare Worker that streams IBM Verify SaaS audit events into Slack with AI-powered
-classification, scheduled digest reports, and an on-demand `/report` slash command.
+A Cloudflare Worker that polls the IBM Verify SaaS audit Events API every minute and posts
+AI-classified security alerts to Slack, plus scheduled digest reports and an on-demand
+`/report` slash command.
 
 **Live Worker:** `https://verify-bot.baronia.workers.dev`  
 **Slack channel:** `#ibm-verify-alerts`  
@@ -13,16 +14,17 @@ classification, scheduled digest reports, and an on-demand `/report` slash comma
 
 ```
 IBM Verify SaaS
-  ├── Notification Webhook (push)  →  POST /verify-webhook  ─┐
-  │                                                           ├── Gemini classify → Slack alert
-  └── Events API (cron poll)       →  scheduled * * * * *  ──┘
+  └── Events API (cron poll every minute)  →  handleScheduled()
+                                                  │
+                                                  ├── Gemini classify (severity 0–10)
+                                                  └── Slack Block Kit alert → #ibm-verify-alerts
 
 Slack
   ├── /report [days]  →  POST /slack/command  →  button panel or instant report
   └── Button clicks   →  POST /slack/actions  →  period summary → Slack webhook
 
 Cron (Cloudflare)
-  ├── * * * * *      →  poll Events API, fire real-time alerts
+  ├── * * * * *      →  every minute: poll Events API, fire real-time alerts
   ├── 0 0 * * *      →  08:00 SGT daily digest
   ├── 0 0 * * 1      →  08:00 SGT Monday — 7-day weekly report
   ├── 0 0 1 * *      →  08:00 SGT 1st of month — 30-day report
@@ -63,7 +65,6 @@ npx wrangler deploy  # deploys + registers all 5 crons
 
 ```bash
 cd worker-verifybot
-npx wrangler secret put VERIFY_WEBHOOK_SECRET
 npx wrangler secret put EVENTS_CLIENT_ID
 npx wrangler secret put EVENTS_CLIENT_SECRET
 npx wrangler secret put GEMINI_API_KEY
@@ -74,9 +75,8 @@ npx wrangler secret put SEVERITY_THRESHOLD   # e.g. 6
 
 | Secret | Purpose |
 |--------|---------|
-| `VERIFY_WEBHOOK_SECRET` | Authenticates IBM Verify push webhook POSTs |
-| `EVENTS_CLIENT_ID` | Dedicated events API client (needs Manage+Read reports) |
-| `EVENTS_CLIENT_SECRET` | — |
+| `EVENTS_CLIENT_ID` | IBM Verify API client for the Events API (needs Manage + Read reports entitlements) |
+| `EVENTS_CLIENT_SECRET` | Secret for the Events API client |
 | `GEMINI_API_KEY` | Gemini 3.5 Flash Lite — event classification + report narratives |
 | `SLACK_SIGNING_SECRET` | HMAC verification for all Slack requests |
 | `SLACK_ALERT_WEBHOOK_URL` | Incoming webhook URL — posts alerts and reports |
@@ -93,35 +93,6 @@ npx wrangler secret put SEVERITY_THRESHOLD   # e.g. 6
 4. Copy **Incoming Webhook URL** → push as `SLACK_ALERT_WEBHOOK_URL`
 5. Left sidebar → **Interactivity & Shortcuts** → toggle **ON** → Request URL:  
    `https://verify-bot.baronia.workers.dev/slack/actions`
-
----
-
-## IBM Verify Webhook Setup
-
-1. **baronia.verify.ibm.com** → Admin Console → **Security** → **Notification webhooks** → **Add**
-2. URL: `https://verify-bot.baronia.workers.dev/verify-webhook`
-3. Authentication: **Header** → name: `X-Verify-Secret` → value: `<VERIFY_WEBHOOK_SECRET>`
-4. Event types: Authentication, Management, SSO, Token, Access Request
-
----
-
-## Test On-Demand
-
-```bash
-SECRET=<VERIFY_WEBHOOK_SECRET>
-
-curl -X POST https://verify-bot.baronia.workers.dev/trigger-summary \
-  -H "X-Verify-Secret: $SECRET"                   # daily digest
-
-curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=7" \
-  -H "X-Verify-Secret: $SECRET"                   # 7-day
-
-curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=30" \
-  -H "X-Verify-Secret: $SECRET"                   # 30-day
-
-curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=90" \
-  -H "X-Verify-Secret: $SECRET"                   # 90-day
-```
 
 ---
 
@@ -145,6 +116,28 @@ curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=90" \
 | MFA removal / deactivation | 8 |
 | Password reset / account delete | 8 |
 | Impersonation / escalation | 9 |
+
+---
+
+## Test On-Demand
+
+Manually trigger a summary with `curl` — protected by `X-Trigger-Secret: <SLACK_SIGNING_SECRET>`:
+
+```bash
+SECRET=<SLACK_SIGNING_SECRET>
+
+curl -X POST https://verify-bot.baronia.workers.dev/trigger-summary \
+  -H "X-Trigger-Secret: $SECRET"                   # daily digest
+
+curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=7" \
+  -H "X-Trigger-Secret: $SECRET"                   # 7-day
+
+curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=30" \
+  -H "X-Trigger-Secret: $SECRET"                   # 30-day
+
+curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=90" \
+  -H "X-Trigger-Secret: $SECRET"                   # 90-day
+```
 
 ---
 

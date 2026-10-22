@@ -147,7 +147,6 @@ ol.steps li code { background: #e8e8e8; padding: 1px 5px; border-radius: 2px; fo
     <a href="#deploy">Deploy</a>
     <a href="#secrets">Secrets</a>
     <a href="#slack-setup">Slack app setup</a>
-    <a href="#webhook-setup">IBM Verify webhook</a>
     <a href="#severity">Severity model</a>
     <a href="#test">Test on-demand</a>
     <a href="#troubleshooting">Troubleshooting</a>
@@ -171,9 +170,10 @@ ol.steps li code { background: #e8e8e8; padding: 1px 5px; border-radius: 2px; fo
       <hr class="section-rule">
       <div class="diagram"><pre>
 IBM Verify SaaS
-  ├── Notification Webhook (push)  →  POST /verify-webhook  ─┐
-  │                                                           ├── Gemini classify → Slack alert
-  └── Events API (cron poll)       →  scheduled * * * * *  ──┘
+  └── Events API (cron poll every minute)  →  handleScheduled()
+                                                  │
+                                                  ├── Gemini classify (severity 0–10)
+                                                  └── Slack Block Kit alert → #ibm-verify-alerts
 
 Slack
   ├── /report [days]  →  POST /slack/command  →  button panel or instant report
@@ -195,9 +195,6 @@ Cloudflare Cron Triggers
 
       <h3>Real-time alerts</h3>
       <p>Every minute the Cloudflare cron trigger fires <code>handleScheduled()</code>. It reads <code>lastPolledTime</code> from KV, calls the IBM Verify Events API for events since that timestamp, then updates <code>lastPolledTime</code>. Each event is forwarded to Gemini 3.5 Flash Lite for classification — Gemini assigns a severity score (0–10) and a human-readable summary. Events at or above <code>SEVERITY_THRESHOLD</code> (default 6) are posted to Slack as Block Kit messages with the severity score, category, and Gemini summary prominently shown. Deterministic severity floors are applied after Gemini.</p>
-
-      <h3>IBM Verify push webhook</h3>
-      <p>IBM Verify can also push events instantly via a notification webhook (<code>POST /verify-webhook</code>), authenticated with a shared secret in the <code>X-Verify-Secret</code> header. Webhook events skip the polling cycle and go straight through the Gemini classify → Slack alert pipeline.</p>
 
       <h3>Scheduled digest reports</h3>
       <p>Four cron triggers fire at 08:00 SGT to produce narrative digest reports. Each trigger fetches all events for the relevant period, groups them by category with counts, and asks Gemini to write a paragraph summary with key statistics, top event types, and security observations. Reports are posted to the Slack channel with a period header.</p>
@@ -262,7 +259,6 @@ npx wrangler deploy  # deploys + registers all 5 cron triggers</pre></div>
       <div class="section-title">Secrets</div>
       <hr class="section-rule">
       <div class="code-block"><pre>cd worker-verifybot
-npx wrangler secret put VERIFY_WEBHOOK_SECRET
 npx wrangler secret put EVENTS_CLIENT_ID
 npx wrangler secret put EVENTS_CLIENT_SECRET
 npx wrangler secret put GEMINI_API_KEY
@@ -271,7 +267,6 @@ npx wrangler secret put SLACK_ALERT_WEBHOOK_URL
 npx wrangler secret put SEVERITY_THRESHOLD     # e.g. 6</pre></div>
       <table>
         <tr><th>Secret</th><th>Purpose</th></tr>
-        <tr><td><code>VERIFY_WEBHOOK_SECRET</code></td><td>Authenticates IBM Verify push webhook POSTs — sent in the <code>X-Verify-Secret</code> request header</td></tr>
         <tr><td><code>EVENTS_CLIENT_ID</code></td><td>IBM Verify API client for the Events API. Must have <strong>Manage reports</strong> + <strong>Read reports</strong> entitlements</td></tr>
         <tr><td><code>EVENTS_CLIENT_SECRET</code></td><td>Secret for the Events API client</td></tr>
         <tr><td><code>GEMINI_API_KEY</code></td><td>Google AI Studio key — event classification and report narrative generation (Gemini 3.5 Flash Lite)</td></tr>
@@ -297,19 +292,6 @@ npx wrangler secret put SEVERITY_THRESHOLD     # e.g. 6</pre></div>
       </ol>
     </div>
 
-    <!-- IBM VERIFY WEBHOOK SETUP -->
-    <div class="section" id="webhook-setup">
-      <div class="section-title">IBM Verify webhook setup</div>
-      <hr class="section-rule">
-      <ol class="steps">
-        <li>Go to <strong>baronia.verify.ibm.com</strong> → Admin Console → <strong>Security</strong> → <strong>Notification webhooks</strong> → <strong>Add</strong></li>
-        <li>URL: <code>https://verify-bot.baronia.workers.dev/verify-webhook</code></li>
-        <li>Authentication: <strong>Header</strong> → name: <code>X-Verify-Secret</code> → value: your <code>VERIFY_WEBHOOK_SECRET</code></li>
-        <li>Event types: Authentication, Management, SSO, Token, Access Request</li>
-        <li>Save and test with the IBM Verify built-in test button</li>
-      </ol>
-    </div>
-
     <!-- SEVERITY MODEL -->
     <div class="section" id="severity">
       <div class="section-title">Severity classification model</div>
@@ -329,24 +311,24 @@ npx wrangler secret put SEVERITY_THRESHOLD     # e.g. 6</pre></div>
     <div class="section" id="test">
       <div class="section-title">Test on-demand</div>
       <hr class="section-rule">
-      <p>Trigger reports manually using <code>curl</code> (requires the webhook secret):</p>
-      <div class="code-block"><pre>SECRET=&lt;VERIFY_WEBHOOK_SECRET&gt;
+      <p>Trigger reports manually using <code>curl</code> — protected by <code>X-Trigger-Secret</code> (value = <code>SLACK_SIGNING_SECRET</code>):</p>
+      <div class="code-block"><pre>SECRET=&lt;SLACK_SIGNING_SECRET&gt;
 
 # Daily digest
 curl -X POST https://verify-bot.baronia.workers.dev/trigger-summary \
-  -H "X-Verify-Secret: $SECRET"
+  -H "X-Trigger-Secret: $SECRET"
 
 # 7-day weekly
 curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=7" \
-  -H "X-Verify-Secret: $SECRET"
+  -H "X-Trigger-Secret: $SECRET"
 
 # 30-day monthly
 curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=30" \
-  -H "X-Verify-Secret: $SECRET"
+  -H "X-Trigger-Secret: $SECRET"
 
 # 90-day quarterly
 curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=90" \
-  -H "X-Verify-Secret: $SECRET"</pre></div>
+  -H "X-Trigger-Secret: $SECRET"</pre></div>
     </div>
 
     <!-- TROUBLESHOOTING -->
@@ -376,7 +358,6 @@ curl -X POST "https://verify-bot.baronia.workers.dev/trigger-summary?days=90" \
     <a href="#deploy">Deploy</a>
     <a href="#secrets">Secrets</a>
     <a href="#slack-setup">Slack app setup</a>
-    <a href="#webhook-setup">IBM Verify webhook</a>
     <a href="#severity">Severity model</a>
     <a href="#test">Test on-demand</a>
     <a href="#troubleshooting">Troubleshooting</a>
