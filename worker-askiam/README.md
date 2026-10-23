@@ -67,6 +67,8 @@ npx wrangler kv namespace create ASKIAM_TOKENS   # first time only — paste id 
 npx wrangler deploy
 ```
 
+> **New to this?** See [`COOKBOOK.md`](COOKBOOK.md) for a complete step-by-step walkthrough.
+
 ---
 
 ## Secrets
@@ -269,3 +271,13 @@ Responses may be `application/json` or `text/event-stream` (SSE). The client han
 | `401 Unauthorized` from MCP server | User not entitled to Subject app | Admin Console → MCP Server Subject → Entitlements → add user |
 | Token keeps expiring | Refresh token revoked | Click the auth link once to renew |
 | Gemini routing fails silently | Bad or missing API key | Check `GEMINI_API_KEY`; try `/askiam count all users` |
+
+---
+
+## KV Put Optimisations
+
+To stay within the Cloudflare free-tier limit (1,000 puts/day):
+
+- **Shared result cache** — paginated query results are cached under a key derived from the tool name + args only (no `userId`). All users querying the same data share one KV slot instead of each creating a separate entry.
+- **Pagination threshold is 25 rows** — results under 25 rows are never cached in KV. Small queries (counts, single-record lookups) cost zero puts.
+- **Conditional write** — the cache is only written if the result has changed since the last write.

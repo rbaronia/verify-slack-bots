@@ -62,7 +62,7 @@ const SCOPES         = 'openid profile';
 
 const STATE_TTL_MS   = 5 * 60 * 1000;   // 5 min PKCE state
 const RESULT_TTL_S   = 10 * 60;         // 10 min cached MCP result for pagination
-const PAGE_SIZE      = 10;
+const PAGE_SIZE      = 25;
 // ---------------------------------------------------------------------------
 // C1 — Write-operation tool registry + admin authorisation
 // ---------------------------------------------------------------------------
@@ -410,9 +410,9 @@ async function executeQuery(query, accessToken, responseUrl, env, userId = '', p
   const needsPagination = mode !== 'all' && estimateRowCount(rawResult) > PAGE_SIZE;
   let cacheKey = null;
   if (needsPagination) {
-    // Use a deterministic key so repeated identical queries reuse the same KV
-    // slot rather than creating a new entry each time (saves free-tier puts).
-    cacheKey = `result:${userId}:${await hashKey(route.toolName, JSON.stringify(route.args))}`;
+    // Shared cache key (no userId) so all users querying the same tool+args
+    // reuse one KV slot instead of each burning a separate put.
+    cacheKey = `result:${await hashKey(route.toolName, JSON.stringify(route.args))}`;
     const existing = await env.ASKIAM_TOKENS.get(cacheKey, { type: 'json' }).catch(() => null);
     if (!existing || existing.rawResult !== rawResult) {
       await env.ASKIAM_TOKENS.put(cacheKey, JSON.stringify({
